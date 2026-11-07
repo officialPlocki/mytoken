@@ -136,7 +136,7 @@ fn App() -> Element {
             footer { class: "footer",
                 div { class: "privacy-line",
                     span { class: "privacy-dot" }
-                    p { strong { "Usage stays on this device." } " The analyzer writes a local report; it does not send or save usage data on mytoken servers or include it in anonymous analytics. It downloads current public API prices and, for detected OpenCode Go models, plan metadata." }
+                    p { strong { "Usage records stay on this device." } " The analyzer writes the report locally and does not upload records to mytoken or include them in anonymous analytics. The launcher downloads ccusage; the analyzer fetches public API prices and, when relevant, OpenCode Go plan data. The site host and contacted services may receive ordinary connection metadata, such as your IP address." }
                 }
                 div { class: "footer-notes",
                     span { "Theme follows your system appearance." }
