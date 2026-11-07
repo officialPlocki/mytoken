@@ -615,7 +615,7 @@ function buildReportHtml(payload) {
 <section class="panel"><h2>Usage by ccusage source</h2><div class="table-wrap" id="usage-table"></div></section>
 <section class="panel"><h2>Same token mix at other API models</h2><div class="table-wrap" id="comparison-table"></div></section>
 <section class="notes"><strong>Reading this estimate</strong><ul id="notes"></ul></section>
-<footer class="foot"><span>ccusage aggregates every source supported by the installed version.</span><span>Theme follows your system appearance.</span><span>Pricing metadata: <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json">LiteLLM</a> · <a href="${GO_DOCS_URL}">OpenCode Go plans</a></span></footer>
+<footer class="foot"><span>ccusage aggregates every source supported by the installed version.</span><span>Pricing metadata: <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json">LiteLLM</a> · <a href="${GO_DOCS_URL}">OpenCode Go plans</a></span></footer>
 </main><script type="application/json" id="ledger-data">${safePayload}</script>
 <script>
 const data=JSON.parse(document.getElementById('ledger-data').textContent);let active='monthly';
