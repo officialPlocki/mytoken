@@ -105,7 +105,7 @@ fn App() -> Element {
                 span { class: "flow-arrow", "→" }
                 div { class: "flow-item",
                     span { class: "flow-index", "B" }
-                    div { strong { "Reprice" } p { "Live API rates plus your plan allowances" } }
+                    div { strong { "Compare" } p { "Every priced API provider, automatically" } }
                 }
                 span { class: "flow-arrow", "→" }
                 div { class: "flow-item",

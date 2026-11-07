@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { stdin, stdout } from "node:process";
+import { stdin, stdout, stderr } from "node:process";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -400,31 +400,36 @@ function bestModelForProvider(provider, entries, workload) {
   return best;
 }
 
-async function chooseComparisons(registry, records) {
+function chooseComparisons(registry, records) {
   const entries = flattenRegistry(registry);
   const providers = [...new Set(entries.map((entry) => String(entry.info.litellm_provider).toLowerCase()))].sort();
-  if (!providers.length) return [];
-  const defaults = ["deepseek", "anthropic", "openai", "google", "xai", "mistral", "moonshot"].filter((id) => providers.includes(id));
-  console.log("\nAvailable API provider IDs in the live pricing registry:");
-  console.log(providers.join(", "));
-  console.log("Enter provider IDs (the lowest listed chat-model cost is selected) or exact LiteLLM model IDs.");
-  const selected = await ask("Compare models", defaults.join(","));
+  if (!providers.length) {
+    console.log("[4/5] No providers with priced chat models were available to compare.");
+    return [];
+  }
   const workload = workloadTotals(records);
   const comparisons = [];
-  for (const input of selected.split(",").map((item) => item.trim()).filter(Boolean)) {
-    let model = null;
-    const exact = findPriceEntry(input, registry);
-    if (exact && exact.value.mode === "chat") {
-      model = { key: exact.key, info: exact.value, cost: costFromRateEntry(workload, exact.value) };
-    } else {
-      model = bestModelForProvider(input, entries, workload);
-    }
-    if (!model || model.cost == null) {
-      console.log(`Skipping '${input}': no priced chat model matched.`);
-      continue;
-    }
-    if (!comparisons.some((item) => item.key === model.key)) comparisons.push(model);
+  const progressWidth = 22;
+  if (stderr.isTTY) {
+    stderr.write(`[4/5] Comparing every priced provider: 0/${providers.length} [${" ".repeat(progressWidth)}]`);
+  } else {
+    console.log(`[4/5] Comparing every priced provider (${providers.length})...`);
   }
+  for (const [index, provider] of providers.entries()) {
+    const model = bestModelForProvider(provider, entries, workload);
+    if (model) comparisons.push(model);
+    if (stderr.isTTY) {
+      const completed = index + 1;
+      const filled = Math.round((completed / providers.length) * progressWidth);
+      const bar = `${"=".repeat(filled)}${".".repeat(progressWidth - filled)}`;
+      stderr.write(`\r[4/5] Comparing every priced provider: ${completed}/${providers.length} [${bar}]`);
+    }
+  }
+  comparisons.sort((left, right) => left.cost - right.cost || left.info.litellm_provider.localeCompare(right.info.litellm_provider));
+  const skipped = providers.length - comparisons.length;
+  const completion = `[4/5] Compared ${comparisons.length} priced providers${skipped ? `; skipped ${skipped} without a usable model` : ""}.`;
+  if (stderr.isTTY) stderr.write(`\r${completion}${" ".repeat(progressWidth + 32)}\n`);
+  else console.log(completion);
   return comparisons;
 }
 
@@ -645,24 +650,28 @@ function openInBrowser(path) {
 
 async function main() {
   console.log("\nmytoken — local usage and cost comparison\n");
-  console.log("Reading all available ccusage sources from this computer. Usage data stays local.\n");
+  console.log("[1/5] Reading local usage from ccusage. Usage data stays on this device.");
   const rawUsage = runCcusage(["daily", "--json", "--breakdown", "--by-agent", "--sections", "weekly,monthly", "--no-cost"]);
   let records = parseUsage(parseJsonOutput(rawUsage));
   if (!records.length) throw new Error("ccusage found no daily model usage on this computer.");
-  console.log(`Loaded ${records.length.toLocaleString()} daily source/model rows from ccusage.`);
+  console.log(`[1/5] Complete — loaded ${records.length.toLocaleString()} daily source/model rows from ccusage.`);
 
   let registry = {};
   let pricingUpdated = false;
   try {
+    console.log("[2/5] Fetching the live API price registry...");
     registry = await loadPriceRegistry();
     pricingUpdated = true;
-    console.log(`Loaded current pricing for ${Object.keys(registry).length.toLocaleString()} model entries from LiteLLM.`);
+    console.log(`[2/5] Complete — loaded ${Object.keys(registry).length.toLocaleString()} model price entries from LiteLLM.`);
   } catch (error) {
-    console.log(`Live model pricing could not be loaded: ${error.message}`);
+    console.log(`[2/5] Live model pricing could not be loaded: ${error.message}`);
   }
 
-  const goTables = sourceHasGoModels(records) ? await loadGoPlans() : [];
+  const hasGoModels = sourceHasGoModels(records);
+  if (hasGoModels) console.log("[2/5] OpenCode Go usage detected; refreshing its public plan limits...");
+  const goTables = hasGoModels ? await loadGoPlans() : [];
   attachPrices(records, registry, goTables);
+  console.log("[3/5] Checking local subscription coverage...");
   const plans = await collectSubscriptions(records, goTables);
   for (const plan of plans) {
     if (plan.type === "opencode-go") applyGoPlan(records, plan);
@@ -670,8 +679,9 @@ async function main() {
     else applyGenericSubscription(records, plan);
   }
 
-  const comparisons = await chooseComparisons(registry, records);
+  const comparisons = chooseComparisons(registry, records);
   const kinds = ["daily", "weekly", "monthly"];
+  console.log("[5/5] Building daily, weekly, and monthly report tables...");
   const periods = Object.fromEntries(kinds.map((kind) => [kind, aggregate(records, kind)]));
   const comparisonPeriods = Object.fromEntries(kinds.map((kind) => [kind, aggregateComparisons(records, kind, comparisons)]));
   const usageOnly = records.filter((record) => !record.isSubscription);
@@ -688,7 +698,7 @@ async function main() {
     pricingUpdated ? "API rates were refreshed from LiteLLM at run time. Model tier, region, prompt length, peak-hour, batch, and provider-specific discounts may change real invoices." : "Live pricing was unavailable. Any model without an available rate is marked Unpriced and is not assumed to cost zero.",
     "Subscription fees are allocated evenly across every calendar day of each month with matching local usage. Plan coverage assumptions are the answers entered in this terminal.",
     "Usage records remain local and are not uploaded to mytoken or included in anonymous analytics. The launcher downloads ccusage, and the analyzer fetches public pricing and, when relevant, OpenCode Go plan data. The site host and contacted services may receive ordinary connection metadata such as your IP address.",
-    "A provider ID selects its lowest listed priced chat model for the recorded token mix. This is a price baseline, not a quality-equivalent model recommendation.",
+    "Every provider with a priced chat model in the live registry is compared automatically. For each provider, the lowest-cost model for this token mix is used as a price baseline, not a quality-equivalent recommendation.",
     ...(unpricedModels.length ? [`No matching public API rate was found for: ${unpricedModels.join(", ")}. Token counts remain visible; these rows are not assumed to be free.`] : []),
     ...(sourceHasGoModels(usageOnly) ? [`OpenCode Go is detected from its opencode-go model IDs. Per-model plan limits use the current official Go documentation when available (${GO_DOCS_URL}).`] : []),
     `Sources currently listed by ccusage: ${SUPPORTED_SOURCES_URL}. Newly supported sources are included after ccusage updates.`,
@@ -703,6 +713,7 @@ async function main() {
   };
   const reportPath = join(tmpdir(), `mytoken-report-${Date.now()}.html`);
   await writeFile(reportPath, buildReportHtml(payload), { encoding: "utf8", mode: 0o600 });
+  console.log("[5/5] Complete — local report is ready.");
   console.log(`\nReport saved locally to: ${reportPath}`);
   if (openInBrowser(reportPath)) console.log("Opened the local report in your browser.");
   else console.log("Could not open a browser automatically. Open the local HTML path above.");
