@@ -1,0 +1,11 @@
+[application]
+name = "mytoken"
+default_platform = "web"
+asset_dir = "public"
+
+[web.app]
+title = "mytoken — Local Usage Cost Report"
+base_path = "/"
+
+[web.resource]
+style = ["./assets/site.css"]

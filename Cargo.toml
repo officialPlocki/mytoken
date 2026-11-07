@@ -1,0 +1,11 @@
+[package]
+name = "mytoken"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dioxus = { version = "0.7.10", default-features = false, features = ["minimal", "web", "document"] }
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
