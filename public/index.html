@@ -4,18 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A local-first token usage report powered by ccusage and current model API pricing.">
+  <meta name="theme-color" content="#f5f7f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111914" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/svg+xml" href="/assets/mytoken-mark.svg">
   <title>mytoken — Local Usage Cost Report</title>
   <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
   <main class="page-shell">
     <header class="topbar">
-      <a class="brand" href="#top" aria-label="mytoken home"><span class="brand-mark">MT</span><span>MYTOKEN</span></a>
+      <a class="brand" href="#top" aria-label="mytoken home"><img class="brand-mark" src="/assets/mytoken-mark.svg" alt="" aria-hidden="true"><span>MYTOKEN</span></a>
       <a class="source-link" href="https://ccusage.com/guide/" target="_blank" rel="noreferrer">Powered by ccusage ↗</a>
     </header>
 
     <section id="top" class="hero">
-      <p class="eyebrow">LOCAL TOKEN COST AUDIT</p>
+      <p class="eyebrow">TOKEN COST AUDIT</p>
       <h1>See what your tokens would cost anywhere.</h1>
       <p class="lede">A single local script reads every supported ccusage source on this computer, groups usage by day, week, and month, then reprices the same token mix against current API rates.</p>
     </section>
@@ -23,7 +26,6 @@
     <section class="command-panel" aria-label="Run the local report">
       <div class="panel-heading">
         <div><p class="step-label">01 / CHOOSE YOUR SYSTEM</p><h2>Run it from your terminal</h2></div>
-        <span class="local-badge">RUNS LOCALLY</span>
       </div>
       <div class="os-tabs" role="tablist" aria-label="Operating system">
         <button id="tab-unix" class="os-tab active" role="tab" aria-selected="true">macOS / Linux</button>
@@ -46,25 +48,9 @@
       <details class="script-disclosure analyzer-disclosure"><summary>Shared analyzer and report generator <span>JAVASCRIPT</span></summary><pre><code id="analyzer-source">Loading source…</code></pre></details>
     </section>
 
-    <section class="profile-panel" aria-label="Optional tokenmaxxing profile sync">
-      <div class="profile-copy">
-        <p class="step-label">OPTIONAL / PUBLIC PROFILE</p>
-        <h2>Keep a longer-running profile with tokenmaxxing.</h2>
-        <p>tokenmaxxing can accumulate daily aggregates each time you sync. It cannot recover local logs that were already deleted, but it can retain data you have already synced.</p>
-        <p class="profile-privacy"><strong>This uploads data publicly.</strong> It sends daily dates, model names, source names, token counts, and API-equivalent estimates. Prompts and session text are not uploaded.</p>
-        <a href="https://tokenmaxxing.sh/" target="_blank" rel="noreferrer">Read tokenmaxxing privacy and setup ↗</a>
-      </div>
-      <div class="profile-commands">
-        <p class="profile-command-label">macOS / Linux</p>
-        <pre><code>if command -v bun >/dev/null 2>&1; then bun install -g @851-labs/tokenmaxxing@latest; else npm install -g @851-labs/tokenmaxxing@latest; fi &amp;&amp; tokenmaxxing bootstrap</code></pre>
-        <p class="profile-command-label">Windows PowerShell</p>
-        <pre><code>if (Get-Command bun -ErrorAction SilentlyContinue) { bun install -g @851-labs/tokenmaxxing@latest } else { npm install -g @851-labs/tokenmaxxing@latest }; if ($?) { tokenmaxxing bootstrap }</code></pre>
-      </div>
-    </section>
-
     <footer class="footer">
-      <div class="privacy-line"><span class="privacy-dot"></span><p><strong>The local report keeps usage on this computer.</strong> It downloads public pricing and Go plan metadata, then opens a local file. Tokenmaxxing is a separate, opt-in command that publishes daily aggregates to a public profile.</p></div>
-      <div class="footer-notes"><span>API rates are estimates from the current LiteLLM registry.</span><a href="https://ccusage.com/guide/all-reports" target="_blank" rel="noreferrer">Supported sources ↗</a></div>
+      <div class="privacy-line"><span class="privacy-dot"></span><p><strong>Usage stays on this device.</strong> The analyzer writes a local report; it does not send or save usage data on mytoken servers or include it in anonymous analytics. It downloads current public API prices and, for detected OpenCode Go models, plan metadata.</p></div>
+      <div class="footer-notes"><span>Theme follows your system appearance.</span><span>API rates are estimates from the current LiteLLM registry.</span><a href="https://ccusage.com/guide/all-reports" target="_blank" rel="noreferrer">Supported sources ↗</a></div>
     </footer>
   </main>
   <script>
@@ -72,7 +58,7 @@
     let windows = false;
     const command = () => windows
       ? `$env:MYTOKEN_SITE_ORIGIN='${origin}'; try { irm '${origin}/scripts/usage-audit.ps1' | iex } finally { Remove-Item Env:MYTOKEN_SITE_ORIGIN -ErrorAction SilentlyContinue }`
-      : `curl -fsSL '${origin}/scripts/usage-audit.sh' | MYTOKEN_SITE_ORIGIN='${origin}' bash`;
+      : `MYTOKEN_SITE_ORIGIN='${origin}' bash -c "$(curl -fsSL '${origin}/scripts/usage-audit.sh')"`;
     const renderCommand = () => { document.getElementById('run-command').textContent = command(); };
     document.getElementById('tab-unix').addEventListener('click', () => {
       windows = false;

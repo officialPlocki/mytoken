@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --ink: #16211d;
   --muted: #69746f;
   --line: #dce3de;
@@ -21,7 +21,7 @@ a { color: inherit; }
 .page-shell { max-width: 1100px; margin: 0 auto; padding: 0 48px 60px; }
 .topbar { height: 88px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 11px; font-size: 12px; font-weight: 800; letter-spacing: .11em; text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--green); color: var(--green-ink); font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.06em; }
+.brand-mark { display: block; width: 32px; height: 32px; flex: 0 0 auto; }
 .source-link { color: #65736b; font-size: 12px; text-decoration: none; }
 .source-link:hover, .footer a:hover { color: #148454; }
 .hero { max-width: 780px; padding: 74px 0 43px; }
@@ -32,7 +32,6 @@ h1 { max-width: 760px; margin: 18px 0 18px; font: 700 clamp(40px, 6vw, 64px)/1.0
 .command-panel { padding: 25px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); box-shadow: 0 14px 40px #1c2a2010; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 h2 { margin: 8px 0 0; font: 700 23px/1.25 system-ui, -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -.035em; }
-.local-badge { padding: 7px 10px; border: 1px solid #d0efdf; border-radius: 20px; color: #18764c; background: #effbf4; font: 500 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .09em; white-space: nowrap; }
 .os-tabs { display: flex; gap: 5px; width: fit-content; margin: 27px 0 13px; padding: 4px; border-radius: 8px; background: #f0f3ef; }
 .os-tab { padding: 9px 13px; border: 0; border-radius: 6px; color: #68746d; background: transparent; font: 600 12px system-ui, -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; }
 .os-tab.active { color: var(--ink); background: white; box-shadow: 0 1px 4px #15251d17; }
@@ -55,15 +54,6 @@ h2 { margin: 8px 0 0; font: 700 23px/1.25 system-ui, -apple-system, BlinkMacSyst
 .script-disclosure summary span { color: #859189; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
 .script-disclosure pre { max-height: 520px; overflow: auto; margin: 0; padding: 18px; border-top: 1px solid var(--line); background: #f9fbf8; color: #314138; font: 10px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
 .script-disclosure code { font: inherit; }
-.profile-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin: 25px 0 4px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #edf3ed; }
-.profile-copy h2 { margin: 9px 0 11px; }
-.profile-copy > p:not(.step-label) { max-width: 510px; margin: 0 0 12px; color: #68766e; font-size: 12px; line-height: 1.65; }
-.profile-copy .profile-privacy { padding: 10px 12px; border-left: 2px solid #d39e4c; background: #fffaf0; color: #726449; }
-.profile-copy .profile-privacy strong { color: #554723; }
-.profile-copy > a { display: inline-block; margin-top: 3px; color: #176d45; font-size: 11px; font-weight: 600; text-decoration: none; }
-.profile-commands { align-self: center; }
-.profile-command-label { margin: 12px 0 6px; color: #64736a; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
-.profile-commands pre { overflow-x: auto; margin: 0; padding: 12px; border-radius: 7px; background: var(--deep); color: #b7f3d0; font: 10px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .footer { padding-top: 28px; }
 .privacy-line { display: flex; align-items: flex-start; gap: 10px; }
 .privacy-dot { flex: 0 0 auto; width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #2db978; box-shadow: 0 0 0 4px #2db97818; }
@@ -71,6 +61,39 @@ h2 { margin: 8px 0 0; font: 700 23px/1.25 system-ui, -apple-system, BlinkMacSyst
 .privacy-line strong { color: #35423a; }
 .footer-notes { display: flex; justify-content: space-between; gap: 12px; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); color: #8b958e; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .footer-notes a { color: #67776d; text-decoration: none; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ink: #e5eee8;
+    --muted: #a0aea5;
+    --line: #2c3a32;
+    --paper: #111914;
+    --panel: #1a241e;
+    --green: #52da9d;
+    --green-ink: #142018;
+    --deep: #080e0b;
+  }
+  .source-link { color: #a0aea5; }
+  .eyebrow, .step-label { color: #70dda7; }
+  .command-panel { box-shadow: 0 14px 40px #0005; }
+  .os-tabs { background: #202b24; }
+  .os-tab { color: #a6b3aa; }
+  .os-tab.active { background: #334138; box-shadow: 0 1px 4px #0005; }
+  .command-text { color: #b7f3d0; }
+  .copy-button { border-color: #40564a; color: #e7f2eb; background: #1d2b24; }
+  .hint { color: #9aa69f; }
+  .flow-index { border-color: #425249; color: #89d8ad; }
+  .flow-item p { color: #9aa79f; }
+  .flow-arrow { color: #77857c; }
+  .script-disclosure summary span { color: #94a198; }
+  .script-disclosure pre { background: #141d17; color: #d2e1d7; }
+  .privacy-line p { color: #a2afa6; }
+  .privacy-line strong { color: #dce8df; }
+  .privacy-dot { background: #39c985; box-shadow: 0 0 0 4px #39c98524; }
+  .footer-notes { color: #8a988e; }
+  .footer-notes a { color: #a4b2a8; }
+}
 
 @media (max-width: 700px) {
   .page-shell { padding: 0 20px 44px; }
@@ -80,7 +103,6 @@ h2 { margin: 8px 0 0; font: 700 23px/1.25 system-ui, -apple-system, BlinkMacSyst
   .lede { font-size: 14px; }
   .command-panel { padding: 18px; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
-  .local-badge { align-self: flex-start; }
   .os-tabs { width: 100%; }
   .os-tab { flex: 1; padding-inline: 6px; }
   .command-row { align-items: flex-start; flex-direction: column; }
@@ -93,8 +115,5 @@ h2 { margin: 8px 0 0; font: 700 23px/1.25 system-ui, -apple-system, BlinkMacSyst
   .section-title h2 { font-size: 20px; }
   .script-disclosure summary { align-items: flex-start; flex-direction: column; gap: 6px; padding-left: 12px; }
   .script-disclosure pre { max-height: 400px; padding: 13px; font-size: 9px; }
-  .profile-panel { grid-template-columns: 1fr; gap: 12px; padding: 18px; }
-  .profile-copy h2 { font-size: 20px; }
-  .profile-commands pre { font-size: 9px; }
   .footer-notes { flex-direction: column; }
 }

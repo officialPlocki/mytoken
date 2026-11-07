@@ -4,8 +4,6 @@ mytoken is a local-first cost comparison page built with Dioxus and Rust. Its co
 
 The report includes ccusage-supported daily, weekly, and monthly views. Weekly and monthly rows are grouped from ccusage daily JSON using the default Monday week start and calendar months. Subscription coverage is entered locally; OpenCode Go model limits are refreshed from the official plan documentation when available.
 
-The optional tokenmaxxing commands are separate from the local report. Running them uploads public daily aggregates to a tokenmaxxing profile.
-
 ## Source layout
 
 - `src/main.rs` — Dioxus Rust page source

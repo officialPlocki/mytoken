@@ -19,11 +19,25 @@ fn App() -> Element {
     let mut platform = use_signal(|| Platform::MacLinux);
     let mut copied = use_signal(|| false);
     let is_windows = platform() == Platform::Windows;
-    let script_url = format!("{}/scripts/{}", SITE_ORIGIN, if is_windows { "usage-audit.ps1" } else { "usage-audit.sh" });
+    let script_url = format!(
+        "{}/scripts/{}",
+        SITE_ORIGIN,
+        if is_windows {
+            "usage-audit.ps1"
+        } else {
+            "usage-audit.sh"
+        }
+    );
     let command = if is_windows {
-        format!("$env:MYTOKEN_SITE_ORIGIN='{}'; try {{ irm '{}' | iex }} finally {{ Remove-Item Env:MYTOKEN_SITE_ORIGIN -ErrorAction SilentlyContinue }}", SITE_ORIGIN, script_url)
+        format!(
+            "$env:MYTOKEN_SITE_ORIGIN='{}'; try {{ irm '{}' | iex }} finally {{ Remove-Item Env:MYTOKEN_SITE_ORIGIN -ErrorAction SilentlyContinue }}",
+            SITE_ORIGIN, script_url
+        )
     } else {
-        format!("curl -fsSL '{}' | MYTOKEN_SITE_ORIGIN='{}' bash", script_url, SITE_ORIGIN)
+        format!(
+            "MYTOKEN_SITE_ORIGIN='{}' bash -c \"$(curl -fsSL '{}')\"",
+            SITE_ORIGIN, script_url
+        )
     };
     let copied_command = command.clone();
 
@@ -31,14 +45,14 @@ fn App() -> Element {
         main { class: "page-shell",
             header { class: "topbar",
                 a { class: "brand", href: "#top", aria_label: "mytoken home",
-                    span { class: "brand-mark", "MT" }
+                    img { class: "brand-mark", src: "/assets/mytoken-mark.svg", alt: "", aria_hidden: "true" }
                     span { "MYTOKEN" }
                 }
                 a { class: "source-link", href: "https://ccusage.com/guide/", target: "_blank", rel: "noreferrer", "Powered by ccusage ↗" }
             }
 
             section { id: "top", class: "hero",
-                p { class: "eyebrow", "LOCAL TOKEN COST AUDIT" }
+                p { class: "eyebrow", "TOKEN COST AUDIT" }
                 h1 { "See what your tokens would cost anywhere." }
                 p { class: "lede", "A single local script reads every supported ccusage source on this computer, groups usage by day, week, and month, then reprices the same token mix against current API rates." }
             }
@@ -49,7 +63,6 @@ fn App() -> Element {
                         p { class: "step-label", "01 / CHOOSE YOUR SYSTEM" }
                         h2 { "Run it from your terminal" }
                     }
-                    span { class: "local-badge", "RUNS LOCALLY" }
                 }
                 div { class: "os-tabs", role: "tablist", aria_label: "Operating system",
                     button {
@@ -120,28 +133,13 @@ fn App() -> Element {
                 }
             }
 
-            section { class: "profile-panel", aria_label: "Optional tokenmaxxing profile sync",
-                div { class: "profile-copy",
-                    p { class: "step-label", "OPTIONAL / PUBLIC PROFILE" }
-                    h2 { "Keep a longer-running profile with tokenmaxxing." }
-                    p { "tokenmaxxing can accumulate daily aggregates each time you sync. It cannot recover local logs that were already deleted, but it can retain data you have already synced." }
-                    p { class: "profile-privacy", strong { "This uploads data publicly." } " It sends daily dates, model names, source names, token counts, and API-equivalent estimates. Prompts and session text are not uploaded." }
-                    a { href: "https://tokenmaxxing.sh/", target: "_blank", rel: "noreferrer", "Read tokenmaxxing privacy and setup ↗" }
-                }
-                div { class: "profile-commands",
-                    p { class: "profile-command-label", "macOS / Linux" }
-                    pre { code { "if command -v bun >/dev/null 2>&1; then bun install -g @851-labs/tokenmaxxing@latest; else npm install -g @851-labs/tokenmaxxing@latest; fi && tokenmaxxing bootstrap" } }
-                    p { class: "profile-command-label", "Windows PowerShell" }
-                    pre { code { "if (Get-Command bun -ErrorAction SilentlyContinue) { bun install -g @851-labs/tokenmaxxing@latest } else { npm install -g @851-labs/tokenmaxxing@latest }; if ($?) { tokenmaxxing bootstrap }" } }
-                }
-            }
-
             footer { class: "footer",
                 div { class: "privacy-line",
                     span { class: "privacy-dot" }
-                    p { strong { "The local report keeps usage on this computer." } " It downloads public pricing and Go plan metadata, then opens a local file. Tokenmaxxing is a separate, opt-in command that publishes daily aggregates to a public profile." }
+                    p { strong { "Usage stays on this device." } " The analyzer writes a local report; it does not send or save usage data on mytoken servers or include it in anonymous analytics. It downloads current public API prices and, for detected OpenCode Go models, plan metadata." }
                 }
                 div { class: "footer-notes",
+                    span { "Theme follows your system appearance." }
                     span { "API prices are estimates from the current LiteLLM registry." }
                     a { href: "https://ccusage.com/guide/all-reports", target: "_blank", rel: "noreferrer", "Supported sources ↗" }
                 }
