@@ -15,13 +15,8 @@ RUN set -e; \
         if RUSTUP_DIST_SERVER="$dist_server" rustup target add wasm32-unknown-unknown; then target_installed=1; break; fi; \
     done; \
     [ "$target_installed" -eq 1 ]; \
-    for attempt in 1 2 3 4 5; do \
-        if curl --retry 3 --retry-all-errors --retry-delay 2 -fsSL https://dioxus.dev/install.sh -o /tmp/dioxus-install.sh \
-            && bash /tmp/dioxus-install.sh \
-            && command -v dx >/dev/null; then break; fi; \
-        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
-        sleep $((attempt * 5)); \
-    done
+    CARGO_NET_RETRY=10 cargo install dioxus-cli --version 0.7.10 --locked; \
+    CARGO_NET_RETRY=10 cargo install wasm-bindgen-cli --version 0.2.130 --locked
 
 WORKDIR /app
 COPY . .
