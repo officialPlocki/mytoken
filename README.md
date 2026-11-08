@@ -7,10 +7,10 @@ The report includes ccusage-supported daily, weekly, and monthly views. Weekly a
 ## Source layout
 
 - `src/main.rs` — Dioxus Rust page source
-- `public/index.html` — static deploy page
-- `public/assets/site.css` — responsive page styles
-- `public/scripts/usage-audit.sh` — macOS and Linux launcher
-- `public/scripts/usage-audit.ps1` — Windows PowerShell launcher
-- `public/scripts/usage-audit.mjs` — local report and price comparison
+- `assets/` — source assets used by the Dioxus web build
+- `assets/site.css` — responsive page styles
+- `assets/scripts/usage-audit.sh` — macOS and Linux launcher
+- `assets/scripts/usage-audit.ps1` — Windows PowerShell launcher
+- `assets/scripts/usage-audit.mjs` — local report and price comparison
 
-The static page is packaged from `public/` for Sites hosting. For Dokploy, deploy with `compose.yaml`; it builds the nginx image from the repository's Dockerfile and exposes port 80 to Dokploy's proxy. This avoids Railpack treating the Dioxus source as a native Rust server. Build the Dioxus web application separately with the Dioxus CLI and the `wasm32-unknown-unknown` Rust target when those tools are available.
+For Dokploy, deploy with `compose.yaml`. Its Dockerfile builds the Dioxus app for WebAssembly with `dx bundle --web --release`, then serves the generated bundle with BusyBox on internal port 3000 for Dokploy's Caddy proxy. Dioxus creates the `public/` bundle during deployment; only that generated bundle goes into the runtime image. Railpack should not be used to compile this web app as a native Rust server.

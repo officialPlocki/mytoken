@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 
-const BASH_SCRIPT: &str = include_str!("../public/scripts/usage-audit.sh");
-const POWERSHELL_SCRIPT: &str = include_str!("../public/scripts/usage-audit.ps1");
-const ANALYZER_SCRIPT: &str = include_str!("../public/scripts/usage-audit.mjs");
+const BASH_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.sh");
+const POWERSHELL_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.ps1");
+const ANALYZER_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.mjs");
 const SITE_ORIGIN: &str = match option_env!("SITE_ORIGIN") {
     Some(value) => value,
     None => "https://mytoken.alivethrush.chatgpt.site",
