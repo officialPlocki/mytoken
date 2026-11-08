@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { stderr } from "node:process";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -202,6 +201,31 @@ function costFromRateEntry(tokens, entry) {
     + tokenCost(tokens.cacheRead, cacheReadPrice);
 }
 
+function isPaidRateEntry(info) {
+  if (!info) return false;
+  const input = Number(info.input_cost_per_token);
+  const output = Number(info.output_cost_per_token);
+  if (!Number.isFinite(input) || input <= 0 || !Number.isFinite(output) || output <= 0) return false;
+  return ["cache_creation_input_token_cost", "cache_read_input_token_cost"].every((key) => {
+    if (info[key] == null) return true;
+    const rate = Number(info[key]);
+    return Number.isFinite(rate) && rate > 0;
+  });
+}
+
+function modelClass(name) {
+  const id = String(name).toLowerCase();
+  if (/\b(haiku|flash|mini|nano|small|lite|fast|instant|turbo)\b/.test(id)) return "fast";
+  if (/\b(opus|pro|flagship|ultra|max|large)\b/.test(id)) return "premium";
+  if (/\b(sonnet|glm(?:-\d+(?:\.\d+)*)?|medium|balanced|standard|gpt-[45]|gemini-\d|grok-\d|mistral)\b/.test(id)) return "standard";
+  return null;
+}
+
+function contextWindow(info) {
+  const value = Number(info?.max_input_tokens ?? info?.context_window ?? info?.max_tokens);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 function periodFromDate(date, kind) {
   if (kind === "daily") return date;
   if (kind === "monthly") return date.slice(0, 7);
@@ -219,7 +243,7 @@ function periodFromDate(date, kind) {
 function flattenRegistry(registry) {
   return Object.entries(registry)
     .filter(([, info]) => info && typeof info === "object" && info.mode === "chat"
-      && info.litellm_provider && info.input_cost_per_token != null && info.output_cost_per_token != null)
+      && info.litellm_provider)
     .map(([key, info]) => ({ key, info }));
 }
 
@@ -227,64 +251,15 @@ function modelCatalog(registry) {
   return flattenRegistry(registry).map(({ key, info }) => ({
     model: key,
     provider: String(info.litellm_provider),
-    inputRate: asNumber(info.input_cost_per_token),
-    outputRate: asNumber(info.output_cost_per_token),
-    cacheCreateRate: info.cache_creation_input_token_cost == null ? asNumber(info.input_cost_per_token) : asNumber(info.cache_creation_input_token_cost),
-    cacheReadRate: info.cache_read_input_token_cost == null ? asNumber(info.input_cost_per_token) : asNumber(info.cache_read_input_token_cost),
+    inputRate: info.input_cost_per_token == null ? null : Number(info.input_cost_per_token),
+    outputRate: info.output_cost_per_token == null ? null : Number(info.output_cost_per_token),
+    cacheCreateRate: info.cache_creation_input_token_cost == null ? (info.input_cost_per_token == null ? null : Number(info.input_cost_per_token)) : Number(info.cache_creation_input_token_cost),
+    cacheReadRate: info.cache_read_input_token_cost == null ? (info.input_cost_per_token == null ? null : Number(info.input_cost_per_token)) : Number(info.cache_read_input_token_cost),
+    contextWindow: contextWindow(info),
+    modelClass: modelClass(key),
+    features: Object.fromEntries(Object.entries(info).filter(([name, value]) => name.startsWith("supports_") && typeof value === "boolean")),
+    paid: isPaidRateEntry(info),
   }));
-}
-
-function workloadTotals(records) {
-  return records.reduce((totals, record) => {
-    totals.input += record.input;
-    totals.output += record.output;
-    totals.cacheCreate += record.cacheCreate;
-    totals.cacheRead += record.cacheRead;
-    return totals;
-  }, { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 });
-}
-
-function bestModelForProvider(provider, entries, workload) {
-  let best = null;
-  for (const entry of entries.filter((candidate) => String(candidate.info.litellm_provider).toLowerCase() === provider.toLowerCase())) {
-    const cost = costFromRateEntry(workload, entry.info);
-    if (cost == null || cost <= 0) continue;
-    if (!best || cost < best.cost) best = { key: entry.key, info: entry.info, cost };
-  }
-  return best;
-}
-
-function chooseComparisons(registry, records) {
-  const entries = flattenRegistry(registry);
-  const providers = [...new Set(entries.map((entry) => String(entry.info.litellm_provider).toLowerCase()))].sort();
-  if (!providers.length) {
-    console.log("[4/5] No providers with priced chat models were available to compare.");
-    return [];
-  }
-  const workload = workloadTotals(records);
-  const comparisons = [];
-  const progressWidth = 22;
-  if (stderr.isTTY) {
-    stderr.write(`[4/5] Comparing every priced provider: 0/${providers.length} [${" ".repeat(progressWidth)}]`);
-  } else {
-    console.log(`[4/5] Comparing every priced provider (${providers.length})...`);
-  }
-  for (const [index, provider] of providers.entries()) {
-    const model = bestModelForProvider(provider, entries, workload);
-    if (model) comparisons.push(model);
-    if (stderr.isTTY) {
-      const completed = index + 1;
-      const filled = Math.round((completed / providers.length) * progressWidth);
-      const bar = `${"=".repeat(filled)}${".".repeat(progressWidth - filled)}`;
-      stderr.write(`\r[4/5] Comparing every priced provider: ${completed}/${providers.length} [${bar}]`);
-    }
-  }
-  comparisons.sort((left, right) => left.cost - right.cost || left.info.litellm_provider.localeCompare(right.info.litellm_provider));
-  const skipped = providers.length - comparisons.length;
-  const completion = `[4/5] Compared ${comparisons.length} priced providers${skipped ? `; skipped ${skipped} without a usable model` : ""}.`;
-  if (stderr.isTTY) stderr.write(`\r${completion}${" ".repeat(progressWidth + 32)}\n`);
-  else console.log(completion);
-  return comparisons;
 }
 
 function attachPrices(records, registry) {
@@ -293,10 +268,38 @@ function attachPrices(records, registry) {
     const cost = match ? costFromRateEntry(record, match.value) : null;
     record.priceKey = match?.key ?? null;
     record.priceProvider = match?.value?.litellm_provider ?? null;
+    record.paidRate = isPaidRateEntry(match?.value);
     record.missingPrice = cost == null && record.input + record.output + record.cacheCreate + record.cacheRead > 0;
     record.listCost = cost;
     record.actualApiCost = cost;
   }
+}
+
+function aggregateModelUsage(records, kind) {
+  const groups = new Map();
+  for (const record of records) {
+    const period = periodFromDate(record.date, kind);
+    const pricingModel = record.priceKey ?? "";
+    const key = `${period}\u0000${record.model}\u0000${pricingModel}`;
+    if (!groups.has(key)) groups.set(key, {
+      period, model: record.model, pricingModel, provider: record.priceProvider,
+      input: 0, output: 0, cacheCreate: 0, cacheRead: 0, knownApiCost: 0,
+      actualComplete: true, sources: new Set(),
+    });
+    const group = groups.get(key);
+    group.input += record.input;
+    group.output += record.output;
+    group.cacheCreate += record.cacheCreate;
+    group.cacheRead += record.cacheRead;
+    group.sources.add(record.source);
+    if (Number.isFinite(record.actualApiCost)) group.knownApiCost += record.actualApiCost;
+    else group.actualComplete = false;
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    totalTokens: group.input + group.output + group.cacheCreate + group.cacheRead,
+    sources: [...group.sources].sort(),
+  })).sort((left, right) => left.period.localeCompare(right.period) || left.model.localeCompare(right.model));
 }
 
 function aggregate(records, kind) {
@@ -344,32 +347,6 @@ function aggregate(records, kind) {
   })).sort((a, b) => a.period.localeCompare(b.period) || a.source.localeCompare(b.source));
 }
 
-function aggregateComparisons(records, kind, models) {
-  const periods = new Map();
-  for (const record of records) {
-    const period = periodFromDate(record.date, kind);
-    if (!periods.has(period)) periods.set(period, { period, input: 0, output: 0, cacheCreate: 0, cacheRead: 0 });
-    const entry = periods.get(period);
-    entry.input += record.input;
-    entry.output += record.output;
-    entry.cacheCreate += record.cacheCreate;
-    entry.cacheRead += record.cacheRead;
-  }
-  return [...periods.values()].map((entry) => {
-    const original = records.filter((record) => periodFromDate(record.date, kind) === entry.period);
-    const originalCost = original.every((record) => Number.isFinite(record.listCost))
-      ? original.reduce((sum, record) => sum + record.listCost, 0)
-      : null;
-    const comparisonCosts = models.map((model) => ({
-      model: model.key,
-      provider: model.info.litellm_provider,
-      cost: costFromRateEntry(entry, model.info),
-      ratio: originalCost != null && originalCost > 0 ? costFromRateEntry(entry, model.info) / originalCost : null,
-    }));
-    return { period: entry.period, input: entry.input, output: entry.output, cacheCreate: entry.cacheCreate, cacheRead: entry.cacheRead, originalCost, comparisons: comparisonCosts };
-  }).sort((a, b) => a.period.localeCompare(b.period));
-}
-
 function jsonForHtml(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
 }
@@ -385,34 +362,35 @@ function buildReportHtml(payload) {
 <section class="hero"><p class="eyebrow">PRIVATE ON THIS DEVICE</p><h1>Your token usage, repriced.</h1><p>This report is assembled and saved locally. mytoken does not receive your usage records or include them in analytics. If you confirm the optional tokenmaxxing sync prompt, its CLI uploads the daily aggregates it normally syncs to your public tokenmaxxing.sh profile; the report may then import that public history. The analyzer fetches public API prices. Contacted services may receive ordinary connection metadata, such as your IP address.</p></section>
 <section class="cards" id="cards"></section>
 <nav class="tabs" aria-label="Report period" id="tabs"></nav>
-<section class="panel"><h2>Top 10 lowest priced API equivalents</h2><p class="panel-copy">Zero-priced registry entries are excluded. Providers use their lowest positive-priced chat model for the visible token mix; this compares price, not model quality.</p><div class="chart" id="top-chart"></div></section>
 <div class="toolbar" aria-label="Report controls"><input id="search" type="search" placeholder="Search periods, sources, models, or providers"><select id="source-filter" aria-label="Filter usage by source"><option value="">All sources</option></select><select id="provider-filter" aria-label="Filter comparisons by provider"><option value="">All providers</option></select><input id="model-filter" type="search" placeholder="Find a model (e.g. Claude Opus)" aria-label="Filter comparison models"><select id="sort-order" aria-label="Sort report rows"><option value="period-desc">Newest period</option><option value="period-asc">Oldest period</option><option value="cost-asc">Lowest API cost</option><option value="cost-desc">Highest API cost</option><option value="tokens-desc">Most tokens</option><option value="source-asc">Source A–Z</option></select></div>
 <section class="panel"><h2>Usage by ccusage source</h2><div class="table-wrap" id="usage-table"></div></section>
-<section class="panel"><h2>For the same estimated API spend: popular alternatives</h2><p class="panel-copy" id="popular-copy"></p><div class="table-wrap" id="popular-table"></div></section>
-<section class="panel"><h2>Compare providers and models</h2><p class="panel-copy">Pick a provider above or search for any model in the live price registry. Token equivalents scale the visible token mix to the same estimated API spend.</p><div class="table-wrap" id="comparison-table"></div></section>
+<section class="panel"><h2>Usage by model</h2><p class="panel-copy">Choose a model row to compare only paid alternatives in the same model class, with matching recorded capabilities and a context window within 100,000 tokens.</p><div class="table-wrap" id="model-usage-table"></div></section>
+<section class="panel"><h2>Cheaper comparable paid models</h2><div class="comparison-controls" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 18px 12px;flex-wrap:wrap"><p class="panel-copy" id="compare-copy"></p><label style="font-size:11px">Sort <select id="compare-sort" aria-label="Sort comparable models"><option value="cost-asc">Lowest cost</option><option value="savings-desc">Most saved</option><option value="context-asc">Closest context</option><option value="provider-asc">Provider A–Z</option><option value="model-asc">Model A–Z</option><option value="cost-desc">Highest cost</option></select></label></div><div class="table-wrap" id="comparison-table"></div></section>
 <section class="notes"><strong>Reading this estimate</strong><ul id="notes"></ul></section>
 <footer class="foot"><span>ccusage aggregates every source supported by the installed version.</span><span>History: <a href="https://tokenmaxxing.sh/">tokenmaxxing.sh</a></span><span>Pricing metadata: <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json">LiteLLM</a></span></footer>
 </main><script type="application/json" id="ledger-data">${safePayload}</script>
 <script>
-const data=JSON.parse(document.getElementById('ledger-data').textContent);let active='monthly';const pages={usage:1,popular:1,comparison:1};const pageSize=20;
+const data=JSON.parse(document.getElementById('ledger-data').textContent);let active='monthly';let selectedModelKey='';let selectedModelPeriod='';const pages={usage:1,models:1,comparison:1};const pageSize=25;
 const fmtInt=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);
 const fmtMoney=n=>{const value=Number(n||0);if(value>0&&value<0.01){const exact=value.toFixed(12).replace(/0+$/,'').replace(/\.$/,'');return exact==='0'?'<$0.000000000001':'$'+exact;}return '$'+value.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});};
 const fmtEstimate=(known,complete)=>complete?(known===0?'Listed $0':fmtMoney(known)):known>0?fmtMoney(known)+'+':'No public rate';
 const fmtShort=n=>{const value=Number(n||0);if(value>=1e9)return (value/1e9).toFixed(1).replace(/\.0$/,'')+'B';if(value>=1e6)return (value/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(value>=1e3)return (value/1e3).toFixed(1).replace(/\.0$/,'')+'K';return fmtInt(value);};
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const modelRegistry=data.modelCatalog||[];
 document.getElementById('generated').textContent=new Date(data.generatedAt).toLocaleString();
 document.getElementById('cards').innerHTML=[['TOTAL TOKENS',fmtInt(data.summary.totalTokens)],['INPUT',fmtInt(data.summary.input)],['OUTPUT',fmtInt(data.summary.output)],['ESTIMATED API COST',fmtEstimate(data.summary.estimatedApiCost,data.summary.estimateComplete)]].map(([label,value])=>'<div class="card"><span>'+label+'</span><strong>'+value+'</strong></div>').join('');
 const labels={daily:'Day',weekly:'Week',monthly:'Month'};
 document.getElementById('tabs').innerHTML=Object.keys(labels).map(key=>'<button class="tab '+(active===key?'active':'')+'" data-period="'+key+'">'+labels[key]+'</button>').join('');
-document.getElementById('tabs').addEventListener('click',event=>{const key=event.target.dataset.period;if(!key)return;active=key;Object.keys(pages).forEach(key=>pages[key]=1);document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.period===active));render();});
+document.getElementById('tabs').addEventListener('click',event=>{const key=event.target.dataset.period;if(!key)return;active=key;Object.keys(pages).forEach(key=>pages[key]=1);selectedModelKey='';selectedModelPeriod='';document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.period===active));render();});
 const sourceNames=[...new Set(Object.values(data.periods).flat().map(row=>row.source))].sort();
-const providerNames=[...new Set(Object.values(data.comparisons).flat().flatMap(row=>row.comparisons.map(model=>model.provider)))].sort();
+const providerNames=[...new Set(modelRegistry.filter(model=>model.paid).map(model=>model.provider))].sort();
 document.getElementById('source-filter').insertAdjacentHTML('beforeend',sourceNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join(''));
 document.getElementById('provider-filter').insertAdjacentHTML('beforeend',providerNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join(''));
 ['search','source-filter','provider-filter','model-filter','sort-order'].forEach(id=>document.getElementById(id).addEventListener(id==='search'||id==='model-filter'?'input':'change',()=>{Object.keys(pages).forEach(key=>pages[key]=1);render();}));
+document.getElementById('compare-sort').addEventListener('change',()=>{pages.comparison=1;render();});
 function table(headings,rows){return '<table><thead><tr>'+headings.map(head=>'<th>'+head+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table>';}
-function paginated(id,rows,headings,rowHtml,pageKey){const totalPages=Math.max(1,Math.ceil(rows.length/pageSize));pages[pageKey]=Math.min(pages[pageKey],totalPages);const page=pages[pageKey];const visible=rows.slice((page-1)*pageSize,page*pageSize);return (visible.length?table(headings,visible.map(rowHtml).join('')):'<div class="empty">No rows match these filters.</div>')+(rows.length>pageSize?'<div class="pagination"><button data-page="'+pageKey+'" data-step="-1" '+(page===1?'disabled':'')+'>Previous</button><span>Page '+page+' of '+totalPages+' · '+fmtInt(rows.length)+' rows</span><button data-page="'+pageKey+'" data-step="1" '+(page===totalPages?'disabled':'')+'>Next</button></div>':'');}
-document.addEventListener('click',event=>{const button=event.target.closest('[data-page]');if(!button||button.disabled)return;const key=button.dataset.page;pages[key]=Math.max(1,pages[key]+Number(button.dataset.step));render();});
+function paginated(rows,headings,rowHtml,pageKey){const totalPages=Math.max(1,Math.ceil(rows.length/pageSize));pages[pageKey]=Math.min(pages[pageKey],totalPages);const page=pages[pageKey];const visible=rows.slice((page-1)*pageSize,page*pageSize);return (visible.length?table(headings,visible.map(rowHtml).join('')):'<div class="empty">No rows match these filters.</div>')+(rows.length>pageSize?'<div class="pagination"><button data-page="'+pageKey+'" data-step="-1" '+(page===1?'disabled':'')+'>Previous</button><span>Page '+page+' of '+totalPages+' · '+fmtInt(rows.length)+' rows · '+pageSize+'/page</span><button data-page="'+pageKey+'" data-step="1" '+(page===totalPages?'disabled':'')+'>Next</button></div>':'');}
+document.addEventListener('click',event=>{const select=event.target.closest('[data-model-key]');if(select){selectedModelKey=select.dataset.modelKey;selectedModelPeriod=select.dataset.period;pages.comparison=1;render();return;}const button=event.target.closest('[data-page]');if(!button||button.disabled)return;const key=button.dataset.page;pages[key]=Math.max(1,pages[key]+Number(button.dataset.step));render();});
 function render(){
  const query=document.getElementById('search').value.trim().toLowerCase();
  const sourceFilter=document.getElementById('source-filter').value;
@@ -429,28 +407,29 @@ function render(){
   return sort==='cost-asc'?left-right:right-left;
  });
  const rows=sortUsage((data.periods[active]||[]).filter(row=>(!sourceFilter||row.source===sourceFilter)&&matches(row.period+' '+row.source+' '+row.models.join(' '))));
- document.getElementById('usage-table').innerHTML=paginated('usage',rows,['Period','Source','Models','Input','Output','Cache write','Cache read','API equivalent','Estimated API cost'],row=>'<tr><td>'+esc(row.period)+'</td><td>'+esc(row.source)+'</td><td class="models">'+esc(row.models.join(', '))+'</td><td class="num">'+fmtInt(row.input)+'</td><td class="num">'+fmtInt(row.output)+'</td><td class="num">'+fmtInt(row.cacheCreate)+'</td><td class="num">'+fmtInt(row.cacheRead)+'</td><td class="num">'+fmtEstimate(row.knownListCost,row.listComplete)+'</td><td class="num">'+fmtEstimate(row.knownApiCost,row.actualComplete)+'</td></tr>','usage');
- const usageRows=data.periods[active]||[];const workloadTotals=usageRows.reduce((sum,row)=>({input:sum.input+row.input,output:sum.output+row.output,cacheCreate:sum.cacheCreate+row.cacheCreate,cacheRead:sum.cacheRead+row.cacheRead,baseline:sum.baseline+row.knownApiCost,complete:sum.complete&&row.actualComplete}),{input:0,output:0,cacheCreate:0,cacheRead:0,baseline:0,complete:true});const totalTokens=workloadTotals.input+workloadTotals.output+workloadTotals.cacheCreate+workloadTotals.cacheRead;
- const modelCatalog=(data.modelCatalog||[]).filter(model=>model.provider&&model.model);
- const compareModel=(model,workload)=>workload.input*model.inputRate+workload.output*model.outputRate+workload.cacheCreate*model.cacheCreateRate+workload.cacheRead*model.cacheReadRate;
- const popularGroups=[['Claude Opus',/claude.*opus|opus.*claude/i],['Claude Haiku',/claude.*haiku|haiku.*claude/i],['DeepSeek V4 Flash',/deepseek.*v4.*flash|v4.*flash.*deepseek/i],['DeepSeek V4 Pro',/deepseek.*v4.*pro|v4.*pro.*deepseek/i],['Z.ai GLM',/(zai|zhipu|glm)/i],['OpenAI GPT',/(gpt-[45]|gpt-5)/i],['Google Gemini',/gemini/i],['Mistral',/mistral/i]];
- const popularRows=popularGroups.map(([label,pattern])=>{const candidates=modelCatalog.filter(model=>pattern.test(model.model+' '+model.provider));const priced=candidates.map(model=>({model,cost:compareModel(model,workloadTotals)})).filter(row=>row.cost>0).sort((a,b)=>a.cost-b.cost);const best=priced[0];return {label,model:best?.model.model||null,provider:best?.model.provider||null,cost:best?.cost??null,tokens:best&&best.cost>0&&workloadTotals.baseline>0&&workloadTotals.complete?totalTokens*workloadTotals.baseline/best.cost:null};});
- document.getElementById('popular-copy').textContent='Visible '+active+' workload: '+fmtShort(totalTokens)+' tokens for '+fmtMoney(workloadTotals.baseline)+(workloadTotals.complete?'':' + (incomplete estimate)')+'. Token equivalents preserve the observed input/output/cache mix and require a complete source estimate.';
- document.getElementById('popular-table').innerHTML=paginated('popular',popularRows,['Popular model family','Matched model','Provider','Cost for same token mix','Tokens for same spend'],row=>'<tr><td>'+esc(row.label)+'</td><td>'+esc(row.model||'No current match in price registry')+'</td><td>'+esc(row.provider||'—')+'</td><td class="num">'+(row.cost==null?'No matching priced model':fmtMoney(row.cost))+'</td><td class="num">'+(row.tokens==null?(workloadTotals.complete?'—':'Incomplete baseline'):fmtShort(row.tokens))+'</td></tr>','popular');
- const filteredCatalog=modelCatalog.filter(model=>(!providerFilter||model.provider===providerFilter)&&(!modelQuery||model.model.toLowerCase().includes(modelQuery)||model.provider.toLowerCase().includes(modelQuery))&&matches(model.model+' '+model.provider));
- const comparisonRows=filteredCatalog.map(model=>{const cost=compareModel(model,workloadTotals);return {period:active,model:model.model,provider:model.provider,cost,ratio:workloadTotals.baseline>0&&workloadTotals.complete?cost/workloadTotals.baseline:null,tokens:workloadTotals.baseline>0&&workloadTotals.complete&&cost>0?totalTokens*workloadTotals.baseline/cost:null};}).filter(row=>row.cost>0&&matches(row.period+' '+row.model+' '+row.provider));
- comparisonRows.sort((a,b)=>{
-  if(sort==='source-asc')return a.provider.localeCompare(b.provider)||a.model.localeCompare(b.model);
-  return sort==='cost-desc'?b.cost-a.cost:a.cost-b.cost;
- });
- document.getElementById('comparison-table').innerHTML=paginated('comparison',comparisonRows,['Report view','Target model','Provider','Cost for same token mix','Tokens for same spend','Cost vs source'],model=>'<tr><td>'+esc(model.period)+'</td><td>'+esc(model.model)+'</td><td>'+esc(model.provider)+'</td><td class="num">'+fmtMoney(model.cost)+'</td><td class="num">'+(model.tokens==null?(workloadTotals.complete?'—':'Incomplete baseline'):fmtShort(model.tokens))+'</td><td class="num">'+(model.ratio==null?'—':(model.ratio*100).toFixed(1)+'%')+'</td></tr>','comparison');
- const totals=new Map();
- for(const row of data.comparisons[active]||[])for(const model of row.comparisons){
-  if(!Number.isFinite(model.cost)||providerFilter&&model.provider!==providerFilter||!matches(model.model+' '+model.provider))continue;
-  const key=model.provider;const current=totals.get(key)||{provider:key,model:model.model,cost:0};current.cost+=model.cost;totals.set(key,current);
- }
- const top=[...totals.values()].sort((a,b)=>a.cost-b.cost).slice(0,10);const max=top[0]?Math.max(...top.map(row=>row.cost)):0;
- document.getElementById('top-chart').innerHTML=top.length?top.map((row,index)=>'<div class="bar-row" role="img" aria-label="'+esc(row.provider+' '+row.model+' '+fmtMoney(row.cost))+'"><div class="bar-label"><strong>'+String(index+1).padStart(2,'0')+' · '+esc(row.provider)+'<small>'+esc(row.model)+'</small></strong><span>'+fmtMoney(row.cost)+'</span></div><div class="bar-track"><i style="width:'+Math.max(1,max?row.cost/max*100:0)+'%"></i></div></div>').join(''):'<div class="empty">No priced comparisons match these filters.</div>';
+ document.getElementById('usage-table').innerHTML=paginated(rows,['Period','Source','Models','Input','Output','Cache write','Cache read','API equivalent','Estimated API cost'],row=>'<tr><td>'+esc(row.period)+'</td><td>'+esc(row.source)+'</td><td class="models">'+esc(row.models.join(', '))+'</td><td class="num">'+fmtInt(row.input)+'</td><td class="num">'+fmtInt(row.output)+'</td><td class="num">'+fmtInt(row.cacheCreate)+'</td><td class="num">'+fmtInt(row.cacheRead)+'</td><td class="num">'+fmtEstimate(row.knownListCost,row.listComplete)+'</td><td class="num">'+fmtEstimate(row.knownApiCost,row.actualComplete)+'</td></tr>','usage');
+ const sourceModelRows=(data.models[active]||[]).filter(row=>(!sourceFilter||row.sources.includes(sourceFilter))&&matches(row.period+' '+row.model+' '+row.provider+' '+row.sources.join(' ')));
+ sourceModelRows.sort((a,b)=>sort==='period-asc'?a.period.localeCompare(b.period):sort==='period-desc'?b.period.localeCompare(a.period):sort==='tokens-desc'?b.totalTokens-a.totalTokens:sort==='source-asc'?a.model.localeCompare(b.model):sort==='cost-desc'?b.knownApiCost-a.knownApiCost:a.knownApiCost-b.knownApiCost);
+ const paidReferenceRows=sourceModelRows.filter(row=>{const info=modelRegistry.find(model=>model.model===row.pricingModel);return info&&info.paid&&info.modelClass&&info.contextWindow&&Object.keys(info.features).length>0;});
+ let selectedRow=sourceModelRows.find(row=>row.pricingModel===selectedModelKey&&row.period===selectedModelPeriod);
+ if(!selectedRow)selectedRow=(paidReferenceRows.length?paidReferenceRows:sourceModelRows).slice().sort((a,b)=>b.totalTokens-a.totalTokens)[0]||null;
+ if(selectedRow){selectedModelKey=selectedRow.pricingModel;selectedModelPeriod=selectedRow.period;}else{selectedModelKey='';selectedModelPeriod='';}
+ document.getElementById('model-usage-table').innerHTML=paginated(sourceModelRows,['Period','Used model','Provider','Input','Output','Cache write','Cache read','Total tokens','Estimated API cost','Compare'],row=>{const selected=row===selectedRow;return '<tr><td>'+esc(row.period)+'</td><td class="models">'+esc(row.model)+'</td><td>'+esc(row.provider||'—')+'</td><td class="num">'+fmtInt(row.input)+'</td><td class="num">'+fmtInt(row.output)+'</td><td class="num">'+fmtInt(row.cacheCreate)+'</td><td class="num">'+fmtInt(row.cacheRead)+'</td><td class="num">'+fmtInt(row.totalTokens)+'</td><td class="num">'+fmtEstimate(row.knownApiCost,row.actualComplete)+'</td><td><button type="button" data-model-key="'+esc(row.pricingModel)+'" data-period="'+esc(row.period)+'">'+(selected?'Selected':'Compare')+'</button></td></tr>';},'models');
+ const rateCost=(model,workload)=>workload.input*model.inputRate+workload.output*model.outputRate+workload.cacheCreate*model.cacheCreateRate+workload.cacheRead*model.cacheReadRate;
+ let alternatives=[];let baselineCost=null;let sourceInfo=null;
+ if(selectedRow)sourceInfo=modelRegistry.find(model=>model.model===selectedRow.pricingModel)||null;
+ if(sourceInfo&&sourceInfo.paid)baselineCost=rateCost(sourceInfo,selectedRow);
+ const sourceFeatures=sourceInfo?Object.keys(sourceInfo.features):[];
+ const comparable=sourceInfo&&sourceInfo.paid&&sourceInfo.modelClass&&sourceInfo.contextWindow&&sourceFeatures.length>0;
+ if(comparable&&baselineCost>0)alternatives=modelRegistry.filter(model=>model.paid&&model.model!==sourceInfo.model&&model.modelClass===sourceInfo.modelClass&&model.contextWindow&&Math.abs(model.contextWindow-sourceInfo.contextWindow)<=100000&&sourceFeatures.every(feature=>model.features[feature]===sourceInfo.features[feature])&&(!providerFilter||model.provider===providerFilter)&&(!modelQuery||model.model.toLowerCase().includes(modelQuery)||model.provider.toLowerCase().includes(modelQuery))).map(model=>{const cost=rateCost(model,selectedRow);return {...model,cost,savings:baselineCost-cost,contextDelta:model.contextWindow-sourceInfo.contextWindow,sameSpendTokens:cost>0?selectedRow.totalTokens*baselineCost/cost:null};}).filter(model=>model.cost>0&&model.cost<baselineCost);
+ const compareSort=document.getElementById('compare-sort').value;
+ alternatives.sort((a,b)=>compareSort==='savings-desc'?b.savings-a.savings:compareSort==='context-asc'?Math.abs(a.contextDelta)-Math.abs(b.contextDelta):compareSort==='provider-asc'?a.provider.localeCompare(b.provider)||a.model.localeCompare(b.model):compareSort==='model-asc'?a.model.localeCompare(b.model):compareSort==='cost-desc'?b.cost-a.cost:a.cost-b.cost);
+ const contextLabel=sourceInfo&&sourceInfo.contextWindow?fmtInt(sourceInfo.contextWindow)+' context':'context unknown';
+ const classLabel=sourceInfo&&sourceInfo.modelClass?sourceInfo.modelClass+' class':'class unknown';
+ const featureLabel=features=>Object.entries(features||{}).map(([name,value])=>name.replace(/^supports_/,'').replace(/_/g,' ')+': '+(value?'yes':'no')).join(', ')||'No capability metadata';
+ document.getElementById('compare-copy').textContent=!selectedRow?'No usage model is available in this period.':!sourceInfo?'No public price/model metadata is available for '+selectedRow.model+'.':!sourceInfo.paid?'The used model has no positive public input, output, and cache rates; it is excluded from paid comparisons.':!sourceInfo.modelClass||!sourceInfo.contextWindow||!sourceFeatures.length?'Cannot assess like-for-like alternatives: the used model lacks class, context, or feature metadata.':'Used '+selectedRow.model+' · '+classLabel+' · '+contextLabel+' · '+fmtShort(selectedRow.totalTokens)+' tokens · baseline '+fmtMoney(baselineCost)+' · features: '+featureLabel(sourceInfo.features)+'. Alternatives match these recorded feature flags, stay within ±100,000 context tokens, and cost less.';
+ document.getElementById('comparison-table').innerHTML=paginated(alternatives,['Model','Provider','Class','Context','Recorded features','Cost at same usage','Tokens for same spend','Savings'],model=>'<tr><td class="models">'+esc(model.model)+'</td><td>'+esc(model.provider)+'</td><td>'+esc(model.modelClass)+'</td><td class="num">'+fmtInt(model.contextWindow)+' ('+(model.contextDelta>=0?'+':'')+fmtInt(model.contextDelta)+')</td><td>'+esc(featureLabel(model.features))+'</td><td class="num">'+fmtMoney(model.cost)+'</td><td class="num">'+fmtShort(model.sameSpendTokens)+'</td><td class="num">'+fmtMoney(model.savings)+'</td></tr>','comparison');
+ if(selectedRow&&comparable&&baselineCost>0&&!alternatives.length)document.getElementById('comparison-table').innerHTML='<div class="empty">No cheaper paid model matches the same class, recorded features, and ±100,000 token context window for this usage.</div>';
 }
 document.getElementById('notes').innerHTML=data.notes.map(note=>'<li>'+esc(note)+'</li>').join('');render();
 </script></body></html>`;
@@ -513,12 +492,11 @@ async function main() {
   attachPrices(records, registry);
   console.log("[3/5] Applying public API rates to the detected models...");
 
-  const comparisons = chooseComparisons(registry, records);
   const catalog = modelCatalog(registry);
   const kinds = ["daily", "weekly", "monthly"];
   console.log("[5/5] Building daily, weekly, and monthly report tables...");
   const periods = Object.fromEntries(kinds.map((kind) => [kind, aggregate(records, kind)]));
-  const comparisonPeriods = Object.fromEntries(kinds.map((kind) => [kind, aggregateComparisons(records, kind, comparisons)]));
+  const modelPeriods = Object.fromEntries(kinds.map((kind) => [kind, aggregateModelUsage(records, kind)]));
   const usageOnly = records;
   const totalTokens = usageOnly.reduce((sum, record) => sum + record.input + record.output + record.cacheCreate + record.cacheRead, 0);
   const totalInput = usageOnly.reduce((sum, record) => sum + record.input, 0);
@@ -531,7 +509,8 @@ async function main() {
     pricingUpdated ? "API rates were refreshed from LiteLLM at run time. Model tier, region, prompt length, peak-hour, batch, and provider-specific discounts may change real invoices." : "Live pricing could not be loaded; models without a public rate are excluded from API totals.",
     "No subscription, allowance, or top-up fees are included. Every total is an API-price comparison only.",
     "Usage records are not uploaded to mytoken or included in analytics. Syncing to tokenmaxxing.sh is optional and only runs after confirmation; public profile history may be imported into this local report. The analyzer fetches public pricing. Contacted services may receive ordinary connection metadata such as your IP address.",
-    "Every provider with a priced chat model in the live registry is compared automatically. For each provider, the lowest-cost model for this token mix is used as a price baseline, not a quality-equivalent recommendation.",
+    "Paid alternatives are shown only when positive input, output, and listed cache rates are available. Unrated and zero-priced models remain visible in usage by model but are excluded from paid comparisons.",
+    "Alternatives are limited to the same name-derived tier class, identical recorded supports_* capability flags, and a listed input context within 100,000 tokens of the used model. Missing class, feature, or context metadata makes a model ineligible; this is a registry-based compatibility filter, not a quality benchmark.",
     ...(tokenmaxxingImportedCount ? [`Imported ${tokenmaxxingImportedCount} older daily model rows from public tokenmaxxing.sh profile ${tokenmaxxingLogin}. Only dates before this computer’s earliest local date were added to avoid double-counting. The public history has total/output tokens but no input/cache breakdown; imported input is estimated as total minus output and repriced using current rates.`] : []),
     ...(tokenmaxxingHistoryLoaded && !tokenmaxxingImportedCount ? [`Checked the authenticated tokenmaxxing.sh profile ${tokenmaxxingLogin}; it had no dates older than this computer’s local ccusage history to add.`] : []),
     ...(missingPriceModels.length ? [`No public API rate was listed for: ${missingPriceModels.join(", ")}. Those rows say “No public rate” and are excluded from totals.`] : []),
@@ -542,7 +521,7 @@ async function main() {
     sourceCount: new Set(usageOnly.map((record) => record.source)).size,
     summary: { totalTokens, input: totalInput, output: totalOutput, estimatedApiCost, estimateComplete },
     periods,
-    comparisons: comparisonPeriods,
+    models: modelPeriods,
     modelCatalog: catalog,
     notes,
   };
