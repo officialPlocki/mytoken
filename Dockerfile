@@ -18,7 +18,9 @@ RUN dx bundle --web --release \
     && bundle_dir="$(find target/dx -path '*/release/web/public/index.html' -print -quit | sed 's#/index.html$##')" \
     && test -n "$bundle_dir" \
     && mkdir -p /bundle \
-    && cp -a "$bundle_dir"/. /bundle/
+    && cp -a "$bundle_dir"/. /bundle/ \
+    && mkdir -p /bundle/scripts \
+    && cp assets/scripts/usage-audit.* /bundle/scripts/
 
 FROM busybox:1.37.0-musl
 

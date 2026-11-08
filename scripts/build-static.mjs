@@ -14,4 +14,5 @@ execFileSync("dx", ["bundle", "--web", "--release"], {
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(source, output, { recursive: true });
+await cp(new URL("assets/scripts/", root), new URL("dist/scripts/", root), { recursive: true });
 console.log("Built the Dioxus web bundle in dist/.");
