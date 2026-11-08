@@ -1,13 +1,17 @@
-FROM rust:1.85-bookworm AS build
+FROM ubuntu:24.04 AS build
+
+ENV CARGO_HOME="/root/.cargo" \
+    RUSTUP_HOME="/root/.rustup" \
+    PATH="/root/.cargo/bin:/root/.dx/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libssl-dev \
+    && apt-get install -y --no-install-recommends bash build-essential ca-certificates curl pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup target add wasm32-unknown-unknown \
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.85.1 \
+    && rustup target add wasm32-unknown-unknown \
     && curl -sSL https://dioxus.dev/install.sh | bash
 
-ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /app
 COPY . .
 RUN dx bundle --web --release \
