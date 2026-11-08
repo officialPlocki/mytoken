@@ -2,7 +2,7 @@
 
 mytoken is a local-first cost comparison page built with Dioxus and Rust. Its companion script installs ccusage globally with Bun or npm, reads local daily usage reports for all sources supported by ccusage, compares each recorded token mix against every provider with a priced chat model in the current LiteLLM registry, and opens a local HTML report.
 
-The report includes ccusage-supported daily, weekly, and monthly views. Weekly and monthly rows are grouped from ccusage daily JSON using the default Monday week start and calendar months. It compares API prices only and does not ask about subscriptions or allowances. Models without a listed public rate are counted as $0 and identified in the report notes.
+The report includes ccusage-supported daily, weekly, and monthly views. Weekly and monthly rows are grouped from ccusage daily JSON using the default Monday week start and calendar months. It compares API prices only and does not ask about subscriptions or allowances. Models without a listed public rate are excluded from priced totals and identified as having no public rate. If the tokenmaxxing CLI is installed and already authenticated, the analyzer imports older public profile history automatically and asks before syncing local usage to tokenmaxxing.sh. Reports include popular model families, a searchable provider/model comparison, and pagination for long tables.
 
 ## Source layout
 
