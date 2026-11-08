@@ -14,7 +14,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
         if [ "$attempt" -eq 5 ]; then exit 1; fi; \
         sleep $((attempt * 5)); \
     done \
-    && curl --retry 5 --retry-all-errors --retry-delay 2 -sSL https://dioxus.dev/install.sh | bash
+    && for attempt in 1 2 3 4 5; do \
+        if curl --retry 3 --retry-all-errors --retry-delay 2 -fsSL https://dioxus.dev/install.sh -o /tmp/dioxus-install.sh \
+            && bash /tmp/dioxus-install.sh \
+            && command -v dx >/dev/null; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep $((attempt * 5)); \
+    done
 
 WORKDIR /app
 COPY . .
