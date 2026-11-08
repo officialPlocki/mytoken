@@ -9,3 +9,5 @@ base_path = "/"
 
 [web.resource]
 style = ["./assets/site.css"]
+
+[web.resource.dev]
