@@ -11,12 +11,8 @@ RUN apt-get update \
 RUN set -e; \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable; \
     target_installed=0; \
-    for attempt in 1 2 3 4 5; do \
-        for dist_server in https://mirrors.tuna.tsinghua.edu.cn/rustup https://static.rust-lang.org; do \
-            if RUSTUP_DIST_SERVER="$dist_server" rustup target add wasm32-unknown-unknown; then target_installed=1; break 2; fi; \
-        done; \
-        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
-        sleep $((attempt * 5)); \
+    for dist_server in https://rsproxy.cn https://mirrors.tuna.tsinghua.edu.cn/rustup https://static.rust-lang.org; do \
+        if RUSTUP_DIST_SERVER="$dist_server" rustup target add wasm32-unknown-unknown; then target_installed=1; break; fi; \
     done; \
     [ "$target_installed" -eq 1 ]; \
     for attempt in 1 2 3 4 5; do \
