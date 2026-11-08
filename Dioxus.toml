@@ -8,6 +8,5 @@ title = "mytoken — Local Usage Cost Report"
 base_path = "/"
 
 [web.resource]
-style = ["./assets/site.css"]
 
 [web.resource.dev]

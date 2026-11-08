@@ -3,10 +3,9 @@ use dioxus::prelude::*;
 const BASH_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.sh");
 const POWERSHELL_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.ps1");
 const ANALYZER_SCRIPT: &str = include_str!("../assets/scripts/usage-audit.mjs");
-const SITE_ORIGIN: &str = match option_env!("SITE_ORIGIN") {
-    Some(value) => value,
-    None => "https://mytoken.alivethrush.chatgpt.site",
-};
+static SITE_CSS: Asset = asset!("/assets/site.css");
+static BRAND_MARK: Asset = asset!("/assets/mytoken-mark.svg");
+const SITE_ORIGIN: &str = "https://mytoken.gay";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Platform {
@@ -42,10 +41,12 @@ fn App() -> Element {
     let copied_command = command.clone();
 
     rsx! {
+        document::Stylesheet { href: SITE_CSS }
+
         main { class: "page-shell",
             header { class: "topbar",
                 a { class: "brand", href: "#top", aria_label: "mytoken home",
-                    img { class: "brand-mark", src: "/assets/mytoken-mark.svg", alt: "", aria_hidden: "true" }
+                    img { class: "brand-mark", src: BRAND_MARK, alt: "", aria_hidden: "true" }
                     span { "MYTOKEN" }
                 }
                 a { class: "source-link", href: "https://ccusage.com/guide/", target: "_blank", rel: "noreferrer", "Powered by ccusage ↗" }

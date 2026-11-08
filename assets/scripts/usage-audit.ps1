@@ -18,7 +18,7 @@ if ($bun) {
 
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mytoken-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $workDir | Out-Null
-$siteOrigin = if ($env:MYTOKEN_SITE_ORIGIN) { $env:MYTOKEN_SITE_ORIGIN.TrimEnd('/') } else { "https://mytoken.alivethrush.chatgpt.site" }
+$siteOrigin = if ($env:MYTOKEN_SITE_ORIGIN) { $env:MYTOKEN_SITE_ORIGIN.TrimEnd('/') } else { "https://mytoken.gay" }
 $analyzerUrl = "$siteOrigin/scripts/usage-audit.mjs"
 $analyzerPath = Join-Path $workDir "usage-audit.mjs"
 

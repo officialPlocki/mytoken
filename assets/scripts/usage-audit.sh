@@ -22,7 +22,7 @@ fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mytoken.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
-site_origin="${MYTOKEN_SITE_ORIGIN:-https://mytoken.alivethrush.chatgpt.site}"
+site_origin="${MYTOKEN_SITE_ORIGIN:-https://mytoken.gay}"
 analyzer_url="${site_origin%/}/scripts/usage-audit.mjs"
 
 curl -fsSL "$analyzer_url" -o "$work_dir/usage-audit.mjs"
