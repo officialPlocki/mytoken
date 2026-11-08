@@ -13,4 +13,4 @@ The report includes ccusage-supported daily, weekly, and monthly views. Weekly a
 - `public/scripts/usage-audit.ps1` — Windows PowerShell launcher
 - `public/scripts/usage-audit.mjs` — local report and price comparison
 
-The static page is packaged from `public/` for Sites hosting. For Dokploy, use the repository's Dockerfile so the site is served by nginx; this avoids Railpack treating the Dioxus source as a native Rust server. Build the Dioxus web application separately with the Dioxus CLI and the `wasm32-unknown-unknown` Rust target when those tools are available.
+The static page is packaged from `public/` for Sites hosting. For Dokploy, deploy with `compose.yaml`; it builds the nginx image from the repository's Dockerfile and exposes port 80 to Dokploy's proxy. This avoids Railpack treating the Dioxus source as a native Rust server. Build the Dioxus web application separately with the Dioxus CLI and the `wasm32-unknown-unknown` Rust target when those tools are available.

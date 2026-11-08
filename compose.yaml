@@ -1,0 +1,8 @@
+services:
+  mytoken-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    restart: unless-stopped
