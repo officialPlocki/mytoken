@@ -8,7 +8,7 @@ import { join } from "node:path";
 const PRICE_REGISTRY_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const OPENCODE_GO_DOCS_URL = "https://raw.githubusercontent.com/anomalyco/opencode/dev/services/site/src/docs/content/console/go.mdx";
 const SUPPORTED_SOURCES_URL = "https://ccusage.com/guide/all-reports";
-const GO_DOCS_URL = "https://opencode.ai/docs/go/";
+const GO_DOCS_URL = "https://opencode.ai/docs/console/go/";
 const prompt = createInterface({ input: stdin, output: stdout });
 
 function run(command, args) {
@@ -223,15 +223,7 @@ function findGoPlanModel(plans, planIndex, modelId) {
   if (!plan) return null;
   const suffix = String(modelId).split("/").at(-1);
   const key = normalized(suffix);
-  let match = plan.get(key);
-  if (!match) {
-    for (const [candidateKey, candidate] of plan.entries()) {
-      if (candidateKey === key || candidateKey.startsWith(key) || key.startsWith(candidateKey)) {
-        match = candidate;
-        break;
-      }
-    }
-  }
+  const match = plan.get(key);
   if (!match) return null;
   const rows = match.rows;
   const finite = (values) => values.filter(Number.isFinite);
@@ -263,6 +255,35 @@ async function askYes(label, defaultValue = false) {
   return ["y", "yes", "true", "1"].includes(response);
 }
 
+async function askSubscriptionDates(records, label) {
+  const dates = records.map((record) => record.date).sort();
+  const earliest = dates[0];
+  const latest = dates.at(-1);
+  let startDate = await ask(`${label} start date (YYYY-MM-DD)`, earliest);
+  while (!validDate(startDate)) {
+    console.log("Enter a real calendar date in YYYY-MM-DD format.");
+    startDate = await ask(`${label} start date (YYYY-MM-DD)`, earliest);
+  }
+  let endAnswer = await ask(`${label} end date (YYYY-MM-DD or 'active')`, "active");
+  while (!/^active$/i.test(endAnswer) && !validDate(endAnswer)) {
+    console.log("Enter a real calendar date in YYYY-MM-DD format, or 'active'.");
+    endAnswer = await ask(`${label} end date (YYYY-MM-DD or 'active')`, "active");
+  }
+  const endDate = /^active$/i.test(endAnswer) ? latest : endAnswer;
+  if (endDate < startDate) console.log("The end date is before the start date; this subscription will not match any usage.");
+  return { startDate, endDate };
+}
+
+async function askExtraSpend(label) {
+  const question = `Additional usage or top-up spend per billing cycle for ${label} in USD ('unknown' uses the API estimate)`;
+  let response = await ask(question, "unknown");
+  while (!/^unknown$/i.test(response) && !/^\$?\d+(?:\.\d{1,2})?$/.test(response.replaceAll(",", ""))) {
+    console.log("Enter a USD amount, or 'unknown'.");
+    response = await ask(question, "unknown");
+  }
+  return /^unknown$/i.test(response) ? null : parseMoney(response, 0);
+}
+
 function parseMoney(value, fallback = 0) {
   if (/^all$/i.test(value)) return Infinity;
   const parsed = Number(String(value).replace(/[$,]/g, ""));
@@ -271,6 +292,21 @@ function parseMoney(value, fallback = 0) {
 
 function sourceHasGoModels(records) {
   return records.some((record) => /(?:^|\/)opencode-go\//i.test(record.model) || /opencode-go/i.test(record.model));
+}
+
+function isOpenCodeRecord(record) {
+  return normalized(record.source).includes("opencode");
+}
+
+function goModelId(record) {
+  return String(record.model).split("/").at(-1);
+}
+
+function detectGoModels(records, goTables) {
+  return [...new Set(records
+    .filter((record) => isOpenCodeRecord(record))
+    .filter((record) => sourceHasGoModels([record]) || goTables.some((table, index) => findGoPlanModel([table], 0, goModelId(record))))
+    .map(goModelId))].sort();
 }
 
 function periodFromDate(date, kind) {
@@ -287,47 +323,69 @@ function periodFromDate(date, kind) {
   return `${isoYear}-W${String(week).padStart(2, "0")}`;
 }
 
-function monthKey(date) {
-  return date.slice(0, 7);
+function validDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-function daysInMonth(month) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  return new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+function planMatches(plan, record) {
+  return !record.isSubscription
+    && (!plan.startDate || record.date >= plan.startDate)
+    && (!plan.endDate || record.date <= plan.endDate)
+    && plan.matches(record);
 }
 
-function addMonthDays(records, plan) {
-  const activeMonths = new Set(records.filter((record) => plan.matches(record)).map((record) => monthKey(record.date)));
-  for (const month of activeMonths) {
-    const days = daysInMonth(month);
-    for (let day = 1; day <= days; day += 1) {
-      const date = `${month}-${String(day).padStart(2, "0")}`;
-      records.push({
-        date,
-        source: `Subscription: ${plan.label}`,
-        model: plan.label,
-        input: 0,
-        output: 0,
-        cacheCreate: 0,
-        cacheRead: 0,
-        listCost: 0,
-        actualApiCost: 0,
-        subscriptionCost: plan.monthlyFee / days,
-        isSubscription: true,
-      });
+function billingCycleBoundary(startDate, monthOffset) {
+  const [year, month, day] = startDate.split("-").map(Number);
+  const absoluteMonth = year * 12 + (month - 1) + monthOffset;
+  const targetYear = Math.floor(absoluteMonth / 12);
+  const targetMonth = absoluteMonth % 12;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(targetYear, targetMonth, Math.min(day, lastDay))).toISOString().slice(0, 10);
+}
+
+function billingCycleKey(date, startDate) {
+  const [year, month] = date.slice(0, 7).split("-").map(Number);
+  const [startYear, startMonth] = startDate.split("-").map(Number);
+  let offset = (year - startYear) * 12 + month - startMonth;
+  if (date < billingCycleBoundary(startDate, offset)) offset -= 1;
+  return billingCycleBoundary(startDate, offset);
+}
+
+function allocateSubscriptionFee(records, plan) {
+  const cycles = new Map();
+  for (const record of records) {
+    if (!planMatches(plan, record)) continue;
+    const cycle = billingCycleKey(record.date, plan.startDate);
+    if (!cycles.has(cycle)) cycles.set(cycle, new Map());
+    const days = cycles.get(cycle);
+    if (!days.has(record.date)) days.set(record.date, []);
+    days.get(record.date).push(record);
+  }
+  for (const days of cycles.values()) {
+    const dailyFee = (plan.monthlyFee + (plan.monthlyExtraSpend ?? 0)) / days.size;
+    for (const rows of days.values()) {
+      const rowFee = dailyFee / rows.length;
+      for (const record of rows) record.subscriptionCost = (record.subscriptionCost ?? 0) + rowFee;
     }
   }
 }
 
 function applyGenericSubscription(records, plan) {
-  const months = new Map();
+  const cycles = new Map();
   for (const record of records) {
-    if (record.isSubscription || !plan.matches(record)) continue;
-    if (!months.has(monthKey(record.date))) months.set(monthKey(record.date), []);
-    months.get(monthKey(record.date)).push(record);
+    if (!planMatches(plan, record)) continue;
+    const cycle = billingCycleKey(record.date, plan.startDate);
+    if (!cycles.has(cycle)) cycles.set(cycle, []);
+    cycles.get(cycle).push(record);
   }
-  for (const recordsInMonth of months.values()) {
-    const known = recordsInMonth.filter((record) => Number.isFinite(record.actualApiCost));
+  for (const recordsInCycle of cycles.values()) {
+    if (plan.monthlyExtraSpend != null) {
+      for (const record of recordsInCycle) record.actualApiCost = 0;
+      continue;
+    }
+    const known = recordsInCycle.filter((record) => Number.isFinite(record.actualApiCost));
     const total = known.reduce((sum, record) => sum + record.actualApiCost, 0);
     const allowance = plan.monthlyAllowance;
     if (allowance === Infinity) {
@@ -338,39 +396,45 @@ function applyGenericSubscription(records, plan) {
     const ratio = total > 0 ? left / total : 1;
     for (const record of known) record.actualApiCost *= ratio;
   }
-  addMonthDays(records, plan);
+  allocateSubscriptionFee(records, plan);
 }
 
 function applyGoPlan(records, plan) {
   const monthlyModels = new Map();
   for (const record of records) {
-    if (record.isSubscription || !plan.matches(record)) continue;
+    if (!planMatches(plan, record)) continue;
     const model = String(record.model).split("/").at(-1);
-    const key = `${monthKey(record.date)}\u0000${model}`;
+    const key = `${billingCycleKey(record.date, plan.startDate)}\u0000${normalized(model)}`;
     if (!monthlyModels.has(key)) monthlyModels.set(key, { model, rows: [] });
     monthlyModels.get(key).rows.push(record);
   }
   for (const { model, rows } of monthlyModels.values()) {
     const details = findGoPlanModel(plan.goTables, plan.goPlanIndex, model);
-    if (!details) {
-      for (const record of rows) record.actualApiCost = null;
+    const rates = details ?? rows[0].goPublicEntry;
+    if (!rates) {
+      for (const record of rows) {
+        record.listCost = null;
+        record.actualApiCost = plan.monthlyExtraSpend != null ? 0 : null;
+      }
       continue;
     }
-    const costs = rows.map((record) => costFromRateEntry(record, details));
+    const costs = rows.map((record) => costFromRateEntry(record, rates));
     const total = costs.some((value) => value == null) ? null : costs.reduce((sum, value) => sum + value, 0);
     if (total == null) {
-      for (const record of rows) record.actualApiCost = null;
+      for (const record of rows) record.actualApiCost = plan.monthlyExtraSpend != null ? 0 : null;
       continue;
     }
-    const covered = Math.min(total, details.monthlyLimit);
+    const manualAllowance = plan.manualAllowances?.[normalized(model)];
+    const monthlyLimit = details?.monthlyLimit ?? manualAllowance ?? Infinity;
+    const covered = Math.min(total, monthlyLimit);
     const overage = plan.extraUsage ? Math.max(0, total - covered) : 0;
     const ratio = total > 0 ? overage / total : 0;
     rows.forEach((record, index) => {
       record.listCost = costs[index];
-      record.actualApiCost = costs[index] * ratio;
+      record.actualApiCost = plan.monthlyExtraSpend != null ? 0 : costs[index] * ratio;
     });
   }
-  addMonthDays(records, plan);
+  allocateSubscriptionFee(records, plan);
 }
 
 function flattenRegistry(registry) {
@@ -435,58 +499,97 @@ function chooseComparisons(registry, records) {
 
 async function collectSubscriptions(records, goTables) {
   const plans = [];
-  const goModels = [...new Set(records.filter((record) => /opencode-go/i.test(record.model)).map((record) => String(record.model).split("/").at(-1)))];
-  if (goModels.length) {
-    console.log(`\nOpenCode Go model IDs detected: ${goModels.join(", ")}`);
-    const hasGo = await askYes("Do you have an OpenCode Go subscription?", true);
+  const sources = [...new Set(records.map((record) => record.source))].sort();
+  const openCodeRows = records.filter(isOpenCodeRecord);
+  const suggestedGoModels = detectGoModels(openCodeRows, goTables);
+  const selectedGoModels = new Set();
+
+  if (openCodeRows.length) {
+    const allModels = [...new Set(openCodeRows.map(goModelId))].sort();
+    console.log(`\nDetected ccusage source 'opencode' with ${allModels.length} model IDs: ${allModels.join(", ")}`);
+    console.log(suggestedGoModels.length
+      ? `OpenCode Go model candidates matched against the live plan list: ${suggestedGoModels.join(", ")}`
+      : "No OpenCode Go model IDs matched the live plan list. You can still enter IDs if you used Go with renamed or newer models.");
+    const hasGo = await askYes("Does an OpenCode Go plan cover any of these OpenCode models?", suggestedGoModels.length > 0);
     if (hasGo) {
-      console.log("Plan: 1 = Go ($10/month), 2 = Go Plus ($40/month), 3 = Go Teams ($20 per member/month).");
-      const planChoice = await ask("Choose your plan (1/2/3)", "1");
-      const goPlanIndex = Math.max(0, Math.min(2, Number(planChoice) - 1 || 0));
-      const teamMembers = goPlanIndex === 2 ? Math.max(1, Number(await ask("Number of billed Go Teams members", "1")) || 1) : 1;
-      const feeDefaults = [10, 40, 20 * teamMembers];
-      const monthlyFee = parseMoney(await ask("Actual monthly subscription price in USD", String(feeDefaults[goPlanIndex])), feeDefaults[goPlanIndex]);
-      const extraUsage = await askYes("Is Extra Usage / paid top-up enabled?", false);
-      plans.push({
-        label: ["OpenCode Go", "OpenCode Go Plus", "OpenCode Go Teams"][goPlanIndex],
-        monthlyFee,
-        monthlyAllowance: 0,
-        goPlanIndex,
-        goTables,
-        extraUsage,
-        matcher: "opencode-go",
-        matches: (record) => /opencode-go/i.test(record.model),
-        type: "opencode-go",
-      });
-      if (!goTables[goPlanIndex]) {
-        console.log(`Official model caps were unavailable. Review ${GO_DOCS_URL} and enter a monthly API-equivalent included amount for each detected Go model.`);
-        for (const model of goModels) {
-          const amount = await ask(`Included monthly USD value for ${model} (use 'all' if it fits the plan)`, "all");
-          const allowance = parseMoney(amount, Infinity);
-          plans.at(-1).manualAllowances ??= {};
-          plans.at(-1).manualAllowances[model] = allowance;
+      const extraIds = await ask("Additional OpenCode Go model IDs, comma-separated (blank uses the detected candidates)", "");
+      const requestedIds = [...suggestedGoModels, ...extraIds.split(",").map((item) => item.trim()).filter(Boolean)];
+      requestedIds.forEach((model) => selectedGoModels.add(normalized(model.split("/").at(-1))));
+      if (!selectedGoModels.size) {
+        console.log("No Go model IDs were selected, so OpenCode Go coverage was skipped.");
+      } else {
+        console.log("Plan: 1 = Go ($10/month), 2 = Go Plus ($40/month), 3 = Go Teams ($20 per member/month).");
+        const planChoice = await ask("Choose your plan (1/2/3)", "1");
+        const goPlanIndex = Math.max(0, Math.min(2, Number(planChoice) - 1 || 0));
+        const teamMembers = goPlanIndex === 2 ? Math.max(1, Number(await ask("Number of billed Go Teams members", "1")) || 1) : 1;
+        const feeDefaults = [10, 40, 20 * teamMembers];
+        const monthlyFee = parseMoney(await ask("Actual monthly subscription price in USD", String(feeDefaults[goPlanIndex])), feeDefaults[goPlanIndex]);
+        const matches = (record) => isOpenCodeRecord(record) && selectedGoModels.has(normalized(goModelId(record)));
+        const matchedRows = openCodeRows.filter(matches);
+        const dates = await askSubscriptionDates(matchedRows, "OpenCode Go subscription");
+        const monthlyExtraSpend = await askExtraSpend("OpenCode Go");
+        const extraUsage = await askYes("Is Extra Usage / paid top-up enabled?", monthlyExtraSpend != null);
+        const manualAllowances = {};
+        for (const model of new Set(requestedIds.map((item) => item.split("/").at(-1)))) {
+          if (goTables.some((table, index) => findGoPlanModel(goTables, index, model))) continue;
+          const allowance = await ask(`Monthly included API-equivalent USD for unlisted Go model ${model} ('all' if fully included)`, "all");
+          manualAllowances[normalized(model)] = parseMoney(allowance, Infinity);
         }
-        plans.at(-1).type = "opencode-go-manual";
+        plans.push({
+          label: ["OpenCode Go", "OpenCode Go Plus", "OpenCode Go Teams"][goPlanIndex],
+          monthlyFee,
+          monthlyExtraSpend,
+          monthlyAllowance: 0,
+          startDate: dates.startDate,
+          endDate: dates.endDate,
+          goPlanIndex,
+          goTables,
+          manualAllowances,
+          extraUsage,
+          matches,
+          type: "opencode-go",
+        });
       }
     }
   }
 
-  while (await askYes("Add another subscription such as Claude Pro, ChatGPT Plus, Gemini, or Copilot?", false)) {
-    const label = await ask("Subscription name", "AI subscription");
-    const monthlyFee = parseMoney(await ask("Actual monthly subscription price in USD", "0"), 0);
-    const matcher = await ask("Source or model text covered by this plan (e.g. claude, codex, copilot)");
-    if (!matcher) {
-      console.log("A match string is required; this subscription was skipped.");
-      continue;
+  for (const source of sources) {
+    let sourceRows = records.filter((record) => record.source === source);
+    if (isOpenCodeRecord(sourceRows[0] ?? {})) {
+      sourceRows = sourceRows.filter((record) => !selectedGoModels.has(normalized(goModelId(record))));
     }
+    if (!sourceRows.length) continue;
+    const modelNames = [...new Set(sourceRows.map((record) => record.model))].sort();
+    const sourceLabel = ({
+      claude: "Claude Code",
+      codex: "Codex / ChatGPT",
+      opencode: "Other OpenCode models",
+      copilot: "GitHub Copilot",
+      gemini: "Gemini CLI",
+      antigravity: "Antigravity",
+      qwen: "Qwen",
+      kimi: "Kimi",
+      openclaw: "OpenClaw",
+    })[normalized(source)] ?? source;
+    console.log(`\nDetected ccusage source '${source}' with ${modelNames.length} model IDs: ${modelNames.join(", ")}`);
+    const covered = await askYes(`Does a paid subscription cover ${sourceLabel} usage?`, false);
+    if (!covered) continue;
+    const defaultName = `${sourceLabel} subscription`;
+    const label = await ask("Subscription or plan name", defaultName);
+    const monthlyFee = parseMoney(await ask("Actual monthly subscription price in USD", "0"), 0);
+    const dates = await askSubscriptionDates(sourceRows, label);
+    const monthlyExtraSpend = await askExtraSpend(label);
     const allowanceText = await ask("Monthly included API-equivalent USD value ('all' covers every matched row)", "all");
     const monthlyAllowance = parseMoney(allowanceText, Infinity);
     plans.push({
       label,
       monthlyFee,
+      monthlyExtraSpend,
       monthlyAllowance,
-      matcher,
-      matches: (record) => `${record.source} ${record.model}`.toLowerCase().includes(matcher.toLowerCase()),
+      startDate: dates.startDate,
+      endDate: dates.endDate,
+      matches: (record) => record.source === source
+        && (!isOpenCodeRecord(record) || !selectedGoModels.has(normalized(goModelId(record)))),
       type: "generic",
     });
   }
@@ -495,12 +598,15 @@ async function collectSubscriptions(records, goTables) {
 
 function attachPrices(records, registry, goTables) {
   for (const record of records) {
-    const goModel = /opencode-go/i.test(record.model);
     const publicEntry = findPriceEntry(record.model, registry);
-    if (goModel) {
-      record.goPublicEntry = publicEntry?.value ?? null;
-      record.listCost = null;
-      record.actualApiCost = null;
+    const goEntry = isOpenCodeRecord(record)
+      ? goTables.map((_, index) => findGoPlanModel(goTables, index, goModelId(record))).find(Boolean)
+      : null;
+    const explicitGoEntry = /opencode-go/i.test(record.model) ? publicEntry?.value ?? null : null;
+    record.goPublicEntry = goEntry ?? explicitGoEntry;
+    if (record.goPublicEntry) {
+      record.listCost = costFromRateEntry(record, record.goPublicEntry);
+      record.actualApiCost = record.listCost;
       continue;
     }
     record.priceKey = publicEntry?.key ?? null;
@@ -508,29 +614,6 @@ function attachPrices(records, registry, goTables) {
     record.listCost = publicEntry ? costFromRateEntry(record, publicEntry.value) : null;
     record.actualApiCost = record.listCost;
   }
-}
-
-function applyManualGoPlan(records, plan) {
-  const months = new Map();
-  for (const record of records) {
-    if (record.isSubscription || !plan.matches(record)) continue;
-    const model = String(record.model).split("/").at(-1);
-    const key = `${monthKey(record.date)}\u0000${model}`;
-    if (!months.has(key)) months.set(key, { model, rows: [] });
-    months.get(key).rows.push(record);
-  }
-  for (const { model, rows } of months.values()) {
-    const total = rows.reduce((sum, record) => sum + asNumber(record.goPublicEntry && costFromRateEntry(record, record.goPublicEntry)), 0);
-    const allowance = plan.manualAllowances?.[model] ?? Infinity;
-    const uncovered = Math.max(0, total - allowance);
-    const ratio = total > 0 ? uncovered / total : 0;
-    rows.forEach((record) => {
-      const rate = record.goPublicEntry ? costFromRateEntry(record, record.goPublicEntry) : null;
-      record.listCost = rate;
-      record.actualApiCost = rate == null ? null : rate * (plan.extraUsage ? ratio : 0);
-    });
-  }
-  addMonthDays(records, plan);
 }
 
 function aggregate(records, kind) {
@@ -571,7 +654,12 @@ function aggregate(records, kind) {
     totalTokens: group.input + group.output + group.cacheCreate + group.cacheRead,
     models: [...group.models].sort(),
     listCost: group.listKnown ? group.listCost : null,
+    knownListCost: group.listCost,
+    listKnown: group.listKnown,
     actualApiCost: group.actualKnown ? group.actualApiCost : null,
+    knownActualApiCost: group.actualApiCost,
+    actualKnown: group.actualKnown,
+    knownOutlay: group.actualApiCost + group.subscriptionCost,
     outlay: group.actualKnown ? group.actualApiCost + group.subscriptionCost : null,
   })).sort((a, b) => a.period.localeCompare(b.period) || a.source.localeCompare(b.source));
 }
@@ -611,12 +699,14 @@ function buildReportHtml(payload) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mytoken — Local Report</title>
 <style>
-:root{color-scheme:light dark;--ink:#17221c;--muted:#6e7b72;--line:#dce4dd;--green:#1b8152;--paper:#f5f8f4;--white:#fff;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink)}main{max-width:1200px;margin:0 auto;padding:34px 30px 60px}.head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:23px}.brand{font-size:12px;font-weight:800;letter-spacing:.1em}.stamp{color:var(--muted);font:11px ui-monospace,monospace}.hero{padding:34px 0 23px}.eyebrow{margin:0;color:var(--green);font:11px ui-monospace,monospace;letter-spacing:.1em}.hero h1{margin:10px 0 6px;font-size:clamp(28px,4vw,44px);letter-spacing:-.04em}.hero p{max-width:760px;color:var(--muted);margin:0}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{padding:16px 17px;background:var(--white);border:1px solid var(--line);border-radius:9px}.card span{display:block;color:var(--muted);font-size:11px}.card strong{display:block;margin-top:7px;font-size:21px;letter-spacing:-.03em}.tabs{display:flex;gap:6px;margin:30px 0 13px}.tab{padding:8px 13px;border:1px solid var(--line);border-radius:7px;background:var(--white);color:var(--muted);font:600 12px system-ui;cursor:pointer}.tab.active{border-color:#a6d8bd;background:#e9f7ef;color:#176a43}.panel{margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--white);overflow:hidden}.panel h2{margin:0;padding:17px 18px;border-bottom:1px solid var(--line);font-size:15px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px 13px;border-bottom:1px solid #edf0ed;text-align:left;vertical-align:top;font-size:11px}th{position:sticky;top:0;background:#f8faf8;color:#68756d;font:10px ui-monospace,monospace;letter-spacing:.04em}td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}td.models{min-width:220px;color:#6c7971;max-width:330px;overflow-wrap:anywhere}.notes{margin-top:20px;padding:16px 18px;border:1px solid var(--line);border-radius:9px;background:#fbfcfb;color:var(--muted);font-size:11px}.notes strong{color:#33443a}.notes ul{margin:8px 0 0;padding-left:17px}.foot{display:flex;justify-content:space-between;gap:15px;margin-top:20px;color:#87928a;font:10px ui-monospace,monospace}a{color:var(--green)}@media(max-width:700px){main{padding:22px 15px 40px}.cards{grid-template-columns:repeat(2,1fr)}.head{align-items:flex-start;gap:10px;flex-direction:column}.foot{flex-direction:column}}
+:root{color-scheme:light dark;--ink:#17221c;--muted:#6e7b72;--line:#dce4dd;--green:#1b8152;--paper:#f5f8f4;--white:#fff;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink)}main{max-width:1200px;margin:0 auto;padding:34px 30px 60px}.head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:23px}.brand{font-size:12px;font-weight:800;letter-spacing:.1em}.stamp{color:var(--muted);font:11px ui-monospace,monospace}.hero{padding:34px 0 23px}.eyebrow{margin:0;color:var(--green);font:11px ui-monospace,monospace;letter-spacing:.1em}.hero h1{margin:10px 0 6px;font-size:clamp(28px,4vw,44px);letter-spacing:-.04em}.hero p{max-width:760px;color:var(--muted);margin:0}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{padding:16px 17px;background:var(--white);border:1px solid var(--line);border-radius:9px}.card span{display:block;color:var(--muted);font-size:11px}.card strong{display:block;margin-top:7px;font-size:21px;letter-spacing:-.03em}.tabs{display:flex;gap:6px;margin:30px 0 13px;overflow:auto}.tab{padding:8px 13px;border:1px solid var(--line);border-radius:7px;background:var(--white);color:var(--muted);font:600 12px system-ui;cursor:pointer;white-space:nowrap}.tab.active{border-color:#a6d8bd;background:#e9f7ef;color:#176a43}.toolbar{display:grid;grid-template-columns:minmax(200px,2fr) repeat(3,minmax(140px,1fr));gap:8px;margin:0 0 13px}.toolbar input,.toolbar select{min-height:40px;min-width:0;padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--white);color:var(--ink);font:12px system-ui}.panel{margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--white);overflow:hidden}.panel h2{margin:0;padding:17px 18px;border-bottom:1px solid var(--line);font-size:15px}.panel-copy{margin:0;padding:0 18px 13px;color:var(--muted);font-size:11px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:11px 13px;border-bottom:1px solid #edf0ed;text-align:left;vertical-align:top;font-size:11px}th{position:sticky;top:0;background:#f8faf8;color:#68756d;font:10px ui-monospace,monospace;letter-spacing:.04em}td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}td.models{min-width:220px;color:#6c7971;max-width:330px;overflow-wrap:anywhere}.chart{display:grid;gap:11px;padding:4px 18px 18px}.bar-row{display:grid;grid-template-columns:minmax(145px,1.15fr) minmax(100px,2fr);align-items:center;gap:12px}.bar-label{display:flex;justify-content:space-between;gap:8px;min-width:0;font-size:11px}.bar-label strong{overflow:hidden;text-overflow:ellipsis;white-space:normal}.bar-label small{display:block;color:var(--muted);font-weight:400;overflow:hidden;text-overflow:ellipsis}.bar-label span{color:var(--muted);white-space:nowrap}.bar-track{height:12px;border-radius:99px;background:var(--paper);overflow:hidden}.bar-track i{display:block;height:100%;min-width:2px;border-radius:99px;background:var(--green)}.empty{padding:16px 18px;color:var(--muted);font-size:12px}.notes{margin-top:20px;padding:16px 18px;border:1px solid var(--line);border-radius:9px;background:#fbfcfb;color:var(--muted);font-size:11px}.notes strong{color:#33443a}.notes ul{margin:8px 0 0;padding-left:17px}.foot{display:flex;justify-content:space-between;gap:15px;margin-top:20px;color:#87928a;font:10px ui-monospace,monospace}a{color:var(--green)}@media(max-width:760px){main{padding:22px 15px 40px}.cards{grid-template-columns:repeat(2,1fr)}.head{align-items:flex-start;gap:10px;flex-direction:column}.toolbar{grid-template-columns:1fr 1fr}.toolbar input{grid-column:1/-1}.bar-row{grid-template-columns:1fr;gap:5px}.bar-label{justify-content:flex-start;gap:12px}.foot{flex-direction:column}}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#e5eee8;--muted:#9caaa1;--line:#2d3b32;--green:#61d89d;--paper:#111914;--white:#19241d}.tab.active{border-color:#315740;background:#20372a;color:#a1e6bb}th{background:#18221b;color:#b3c0b7}th,td{border-bottom-color:#28352d}td.models{color:#a0ada4}.notes{background:#151e18}.notes strong{color:#d9e5dd}.foot{color:#9aa79f}}</style></head><body><main>
 <header class="head"><div class="brand">MYTOKEN / LOCAL REPORT</div><div class="stamp">Generated <span id="generated"></span></div></header>
 <section class="hero"><p class="eyebrow">PRIVATE ON THIS DEVICE</p><h1>Your token usage, repriced.</h1><p>This report was assembled from local ccusage JSON and current public price registries. Usage records stay on this device. The analyzer writes the report locally and does not upload records to mytoken or include them in anonymous analytics. The launcher downloads ccusage; the analyzer fetches public API prices and, when relevant, OpenCode Go plan data. The site host and contacted services may receive ordinary connection metadata, such as your IP address.</p></section>
 <section class="cards" id="cards"></section>
 <nav class="tabs" aria-label="Report period" id="tabs"></nav>
+<section class="panel"><h2>Top 10 lowest API equivalents</h2><p class="panel-copy">Providers use their lowest priced chat model for the visible token mix. This compares price, not model quality.</p><div class="chart" id="top-chart"></div></section>
+<div class="toolbar" aria-label="Report controls"><input id="search" type="search" placeholder="Search periods, sources, models, or providers"><select id="source-filter" aria-label="Filter usage by source"><option value="">All sources</option></select><select id="provider-filter" aria-label="Filter comparisons by provider"><option value="">All providers</option></select><select id="sort-order" aria-label="Sort report rows"><option value="period-desc">Newest period</option><option value="period-asc">Oldest period</option><option value="cost-asc">Lowest outlay</option><option value="cost-desc">Highest outlay</option><option value="tokens-desc">Most tokens</option><option value="source-asc">Source A–Z</option></select></div>
 <section class="panel"><h2>Usage by ccusage source</h2><div class="table-wrap" id="usage-table"></div></section>
 <section class="panel"><h2>Same token mix at other API models</h2><div class="table-wrap" id="comparison-table"></div></section>
 <section class="notes"><strong>Reading this estimate</strong><ul id="notes"></ul></section>
@@ -626,15 +716,50 @@ function buildReportHtml(payload) {
 const data=JSON.parse(document.getElementById('ledger-data').textContent);let active='monthly';
 const fmtInt=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(n||0);
 const fmtMoney=n=>n==null?'Unpriced':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
+const fmtEstimate=(known,complete)=>complete?fmtMoney(known):known>0?fmtMoney(known)+' + unpriced':'Unpriced';
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 document.getElementById('generated').textContent=new Date(data.generatedAt).toLocaleString();
-document.getElementById('cards').innerHTML=[['TOTAL TOKENS',fmtInt(data.summary.totalTokens)],['INPUT',fmtInt(data.summary.input)],['OUTPUT',fmtInt(data.summary.output)],['MODELED API OUTLAY',fmtMoney(data.summary.outlay)]].map(([label,value])=>'<div class="card"><span>'+label+'</span><strong>'+value+'</strong></div>').join('');
+document.getElementById('cards').innerHTML=[['TOTAL TOKENS',fmtInt(data.summary.totalTokens)],['INPUT',fmtInt(data.summary.input)],['OUTPUT',fmtInt(data.summary.output)],['ESTIMATED OUTLAY',fmtEstimate(data.summary.outlayKnown,data.summary.outlayComplete)]].map(([label,value])=>'<div class="card"><span>'+label+'</span><strong>'+value+'</strong></div>').join('');
 const labels={daily:'Day',weekly:'Week',monthly:'Month'};
 document.getElementById('tabs').innerHTML=Object.keys(labels).map(key=>'<button class="tab '+(active===key?'active':'')+'" data-period="'+key+'">'+labels[key]+'</button>').join('');
 document.getElementById('tabs').addEventListener('click',event=>{const key=event.target.dataset.period;if(!key)return;active=key;document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.period===active));render();});
+const sourceNames=[...new Set(Object.values(data.periods).flat().map(row=>row.source))].sort();
+const providerNames=[...new Set(Object.values(data.comparisons).flat().flatMap(row=>row.models.map(model=>model.provider)))].sort();
+document.getElementById('source-filter').insertAdjacentHTML('beforeend',sourceNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join(''));
+document.getElementById('provider-filter').insertAdjacentHTML('beforeend',providerNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join(''));
+['search','source-filter','provider-filter','sort-order'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',render));
 function table(headings,rows){return '<table><thead><tr>'+headings.map(head=>'<th>'+head+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table>';}
-function render(){const rows=data.periods[active]||[];document.getElementById('usage-table').innerHTML=table(['Period','Source','Models','Input','Output','Cache write','Cache read','API equivalent','Subscription','Estimated outlay'],rows.map(row=>'<tr><td>'+esc(row.period)+'</td><td>'+esc(row.source)+'</td><td class="models">'+esc(row.models.join(', '))+'</td><td class="num">'+fmtInt(row.input)+'</td><td class="num">'+fmtInt(row.output)+'</td><td class="num">'+fmtInt(row.cacheCreate)+'</td><td class="num">'+fmtInt(row.cacheRead)+'</td><td class="num">'+fmtMoney(row.listCost)+'</td><td class="num">'+fmtMoney(row.subscriptionCost)+'</td><td class="num">'+fmtMoney(row.outlay)+'</td></tr>').join(''));
-const comparisonRows=data.comparisons[active]||[];document.getElementById('comparison-table').innerHTML=table(['Period','Target model','Provider','Estimated API cost','Ratio vs source model rates'],comparisonRows.flatMap(row=>row.models.map(model=>'<tr><td>'+esc(row.period)+'</td><td>'+esc(model.model)+'</td><td>'+esc(model.provider)+'</td><td class="num">'+fmtMoney(model.cost)+'</td><td class="num">'+(model.ratio==null?'—':(model.ratio*100).toFixed(1)+'%')+'</td></tr>')).join(''));
+function render(){
+ const query=document.getElementById('search').value.trim().toLowerCase();
+ const sourceFilter=document.getElementById('source-filter').value;
+ const providerFilter=document.getElementById('provider-filter').value;
+ const sort=document.getElementById('sort-order').value;
+ const matches=value=>!query||String(value).toLowerCase().includes(query);
+ const comparePeriod=(a,b)=>sort==='period-asc'?a.period.localeCompare(b.period):b.period.localeCompare(a.period);
+ const sortUsage=rows=>rows.sort((a,b)=>{
+  if(sort==='period-asc'||sort==='period-desc')return comparePeriod(a,b);
+  if(sort==='source-asc')return a.source.localeCompare(b.source)||a.period.localeCompare(b.period);
+  if(sort==='tokens-desc')return b.totalTokens-a.totalTokens;
+  const left=a.outlay,right=b.outlay;if(left==null)return 1;if(right==null)return -1;
+  return sort==='cost-asc'?left-right:right-left;
+ });
+ const rows=sortUsage((data.periods[active]||[]).filter(row=>(!sourceFilter||row.source===sourceFilter)&&matches(row.period+' '+row.source+' '+row.models.join(' '))));
+ document.getElementById('usage-table').innerHTML=rows.length?table(['Period','Source','Models','Input','Output','Cache write','Cache read','API equivalent','Plan + extra spend','Estimated outlay'],rows.map(row=>'<tr><td>'+esc(row.period)+'</td><td>'+esc(row.source)+'</td><td class="models">'+esc(row.models.join(', '))+'</td><td class="num">'+fmtInt(row.input)+'</td><td class="num">'+fmtInt(row.output)+'</td><td class="num">'+fmtInt(row.cacheCreate)+'</td><td class="num">'+fmtInt(row.cacheRead)+'</td><td class="num">'+fmtEstimate(row.knownListCost,row.listKnown)+'</td><td class="num">'+fmtMoney(row.subscriptionCost)+'</td><td class="num">'+fmtEstimate(row.knownOutlay,row.actualKnown)+'</td></tr>').join('')):'<div class="empty">No usage rows match these filters.</div>';
+ const comparisonRows=(data.comparisons[active]||[]).flatMap(row=>row.models.map(model=>({...model,period:row.period}))).filter(row=>(!providerFilter||row.provider===providerFilter)&&matches(row.period+' '+row.model+' '+row.provider));
+ comparisonRows.sort((a,b)=>{
+  if(sort==='period-asc'||sort==='period-desc')return comparePeriod(a,b)||a.provider.localeCompare(b.provider);
+  if(sort==='source-asc')return a.provider.localeCompare(b.provider)||a.model.localeCompare(b.model);
+  const left=a.cost,right=b.cost;if(left==null)return 1;if(right==null)return -1;
+  return sort==='cost-desc'?right-left:left-right;
+ });
+ document.getElementById('comparison-table').innerHTML=comparisonRows.length?table(['Period','Target model','Provider','Estimated API cost','Ratio vs source model rates'],comparisonRows.map(model=>'<tr><td>'+esc(model.period)+'</td><td>'+esc(model.model)+'</td><td>'+esc(model.provider)+'</td><td class="num">'+fmtMoney(model.cost)+'</td><td class="num">'+(model.ratio==null?'—':(model.ratio*100).toFixed(1)+'%')+'</td></tr>').join('')):'<div class="empty">No provider comparisons match these filters.</div>';
+ const totals=new Map();
+ for(const row of data.comparisons[active]||[])for(const model of row.models){
+  if(!Number.isFinite(model.cost)||providerFilter&&model.provider!==providerFilter||!matches(model.model+' '+model.provider))continue;
+  const key=model.provider;const current=totals.get(key)||{provider:key,model:model.model,cost:0};current.cost+=model.cost;totals.set(key,current);
+ }
+ const top=[...totals.values()].sort((a,b)=>a.cost-b.cost).slice(0,10);const max=top[0]?Math.max(...top.map(row=>row.cost)):0;
+ document.getElementById('top-chart').innerHTML=top.length?top.map((row,index)=>'<div class="bar-row" role="img" aria-label="'+esc(row.provider+' '+row.model+' '+fmtMoney(row.cost))+'"><div class="bar-label"><strong>'+String(index+1).padStart(2,'0')+' · '+esc(row.provider)+'<small>'+esc(row.model)+'</small></strong><span>'+fmtMoney(row.cost)+'</span></div><div class="bar-track"><i style="width:'+Math.max(1,max?row.cost/max*100:0)+'%"></i></div></div>').join(''):'<div class="empty">No priced comparisons match these filters.</div>';
 }
 document.getElementById('notes').innerHTML=data.notes.map(note=>'<li>'+esc(note)+'</li>').join('');render();
 </script></body></html>`;
@@ -654,7 +779,8 @@ async function main() {
   const rawUsage = runCcusage(["daily", "--json", "--breakdown", "--by-agent", "--sections", "weekly,monthly", "--no-cost"]);
   let records = parseUsage(parseJsonOutput(rawUsage));
   if (!records.length) throw new Error("ccusage found no daily model usage on this computer.");
-  console.log(`[1/5] Complete — loaded ${records.length.toLocaleString()} daily source/model rows from ccusage.`);
+  const detectedSources = [...new Set(records.map((record) => record.source))].sort();
+  console.log(`[1/5] Complete — loaded ${records.length.toLocaleString()} daily source/model rows from ${detectedSources.length} detected sources: ${detectedSources.join(", ")}.`);
 
   let registry = {};
   let pricingUpdated = false;
@@ -667,15 +793,16 @@ async function main() {
     console.log(`[2/5] Live model pricing could not be loaded: ${error.message}`);
   }
 
+  const hasOpenCode = records.some(isOpenCodeRecord);
   const hasGoModels = sourceHasGoModels(records);
-  if (hasGoModels) console.log("[2/5] OpenCode Go usage detected; refreshing its public plan limits...");
-  const goTables = hasGoModels ? await loadGoPlans() : [];
+  if (hasOpenCode || hasGoModels) console.log("[2/5] OpenCode usage found; checking its model IDs against current Go plan data...");
+  const goTables = hasOpenCode || hasGoModels ? await loadGoPlans() : [];
+  const goModelCandidates = detectGoModels(records, goTables);
   attachPrices(records, registry, goTables);
   console.log("[3/5] Checking local subscription coverage...");
   const plans = await collectSubscriptions(records, goTables);
   for (const plan of plans) {
     if (plan.type === "opencode-go") applyGoPlan(records, plan);
-    else if (plan.type === "opencode-go-manual") applyManualGoPlan(records, plan);
     else applyGenericSubscription(records, plan);
   }
 
@@ -693,20 +820,21 @@ async function main() {
   const outlay = outlayIsComplete
     ? records.reduce((sum, record) => sum + (Number.isFinite(record.actualApiCost) ? record.actualApiCost : 0) + (record.subscriptionCost ?? 0), 0)
     : null;
+  const outlayKnown = records.reduce((sum, record) => sum + (Number.isFinite(record.actualApiCost) ? record.actualApiCost : 0) + (record.subscriptionCost ?? 0), 0);
   const notes = [
     "Input, output, cache-write, and cache-read tokens come from ccusage daily JSON. Week totals use ccusage's default Monday start; month totals follow calendar months. Only ccusage-supported daily, weekly, and monthly views are shown.",
     pricingUpdated ? "API rates were refreshed from LiteLLM at run time. Model tier, region, prompt length, peak-hour, batch, and provider-specific discounts may change real invoices." : "Live pricing was unavailable. Any model without an available rate is marked Unpriced and is not assumed to cost zero.",
-    "Subscription fees are allocated evenly across every calendar day of each month with matching local usage. Plan coverage assumptions are the answers entered in this terminal.",
+    "Subscription billing cycles start on the entered subscription date. Fees and any reported top-up spending are allocated across matching usage days in each active cycle; coverage only applies between the entered start and end dates. API estimates use the included allowance unless an exact extra-spend amount was entered.",
     "Usage records remain local and are not uploaded to mytoken or included in anonymous analytics. The launcher downloads ccusage, and the analyzer fetches public pricing and, when relevant, OpenCode Go plan data. The site host and contacted services may receive ordinary connection metadata such as your IP address.",
     "Every provider with a priced chat model in the live registry is compared automatically. For each provider, the lowest-cost model for this token mix is used as a price baseline, not a quality-equivalent recommendation.",
     ...(unpricedModels.length ? [`No matching public API rate was found for: ${unpricedModels.join(", ")}. Token counts remain visible; these rows are not assumed to be free.`] : []),
-    ...(sourceHasGoModels(usageOnly) ? [`OpenCode Go is detected from its opencode-go model IDs. Per-model plan limits use the current official Go documentation when available (${GO_DOCS_URL}).`] : []),
+    ...(goModelCandidates.length ? [`OpenCode Go candidates were matched by source and model ID against the current official model list (${GO_DOCS_URL}); confirm the models actually used with Go in the terminal prompt.`] : []),
     `Sources currently listed by ccusage: ${SUPPORTED_SOURCES_URL}. Newly supported sources are included after ccusage updates.`,
   ];
   const payload = {
     generatedAt: new Date().toISOString(),
     sourceCount: new Set(usageOnly.map((record) => record.source)).size,
-    summary: { totalTokens, input: totalInput, output: totalOutput, outlay },
+    summary: { totalTokens, input: totalInput, output: totalOutput, outlay, outlayKnown, outlayComplete: outlayIsComplete },
     periods,
     comparisons: comparisonPeriods,
     notes,
