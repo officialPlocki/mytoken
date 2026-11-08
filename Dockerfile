@@ -9,8 +9,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
-    && rustup target add wasm32-unknown-unknown \
-    && curl -sSL https://dioxus.dev/install.sh | bash
+    && for attempt in 1 2 3 4 5; do \
+        rustup target add wasm32-unknown-unknown && break; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep $((attempt * 5)); \
+    done \
+    && curl --retry 5 --retry-all-errors --retry-delay 2 -sSL https://dioxus.dev/install.sh | bash
 
 WORKDIR /app
 COPY . .
