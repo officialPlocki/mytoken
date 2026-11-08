@@ -137,7 +137,7 @@ fn App() -> Element {
             footer { class: "footer",
                 div { class: "privacy-line",
                     span { class: "privacy-dot" }
-                    p { strong { "Usage records stay on this device." } " The analyzer writes the report locally and does not upload records to mytoken or include them in anonymous analytics. The launcher downloads ccusage; the analyzer fetches public API prices and, when relevant, OpenCode Go plan data. The site host and contacted services may receive ordinary connection metadata, such as your IP address." }
+                    p { strong { "Usage records stay on this device." } " The analyzer writes the report locally and does not upload records to mytoken or include them in anonymous analytics. The launcher downloads ccusage; the analyzer fetches public API prices. The site host and contacted services may receive ordinary connection metadata, such as your IP address." }
                 }
                 div { class: "footer-notes",
                     span { "API prices are estimates from the current LiteLLM registry." }
